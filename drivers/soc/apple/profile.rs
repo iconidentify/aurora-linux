@@ -180,7 +180,9 @@ const T8103: PlatformProfile = PlatformProfile {
         cpx_encryption_mode: 2,
     },
     persistent_enrol: true,
-    refresh_match_credential: false,
+    // J313 on a 26.3 sepOS restores its Catacombs, then answers every
+    // MATCH_RESULT with 0x1 without the refresh, as J414c and J314s did.
+    refresh_match_credential: true,
 };
 
 /// M1 Pro (J316s). The M1 family cold-boots its SEP like T8103, so the boot
