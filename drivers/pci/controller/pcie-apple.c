@@ -34,6 +34,7 @@
 #include <linux/of_platform.h>
 #include <linux/pci-apple.h>
 #include <linux/pci-ecam.h>
+#include <linux/pm_runtime.h>
 #include <linux/reset.h>
 #include <linux/soc/apple/dart.h>
 #include <linux/soc/apple/tunable.h>
@@ -312,6 +313,7 @@ struct apple_pcie {
 	bool			power_retained;
 	bool			kernel_init;
 	bool			tunnel_cold_init;
+	struct notifier_block	tunnel_pci_nb;
 	bool			bus_stopped;
 	bool			reset_on_resume;
 	bool			link_kept;
@@ -2145,6 +2147,41 @@ static int apple_pcie_tunnel_add_link(struct apple_pcie *pcie,
 	return ret;
 }
 
+/*
+ * A function behind a cold-initialized T600x/T602x tunnel stays in D0
+ * (NO_D3) when it runtime-suspends, but its wakeup never arrives: an xHCI
+ * that suspends before a power-cycled display's hub reconnects never sees
+ * the hub. Hold a runtime PM reference for as long as each function exists,
+ * so that neither its driver nor power/control can suspend it.
+ */
+static int apple_pcie_tunnel_pci_notify(struct notifier_block *nb,
+					unsigned long action, void *data)
+{
+	struct apple_pcie *pcie = container_of(nb, struct apple_pcie,
+					       tunnel_pci_nb);
+	struct pci_dev *pdev = to_pci_dev(data);
+
+	if (pci_host_bridge_priv(pci_find_host_bridge(pdev->bus)) != pcie)
+		return NOTIFY_DONE;
+
+	switch (action) {
+	case BUS_NOTIFY_ADD_DEVICE:
+		pm_runtime_get_noresume(&pdev->dev);
+		break;
+	case BUS_NOTIFY_DEL_DEVICE:
+		pm_runtime_put_noidle(&pdev->dev);
+		break;
+	}
+	return NOTIFY_OK;
+}
+
+static void apple_pcie_tunnel_pci_unregister(void *data)
+{
+	struct apple_pcie *pcie = data;
+
+	bus_unregister_notifier(&pci_bus_type, &pcie->tunnel_pci_nb);
+}
+
 static int apple_pcie_tunnel_keep_d0(struct pci_dev *pdev, void *data)
 {
 	/*
@@ -2448,6 +2485,18 @@ static int apple_pcie_probe(struct platform_device *pdev)
 	/* Resolve PM dependencies before publishing the PCI hierarchy. */
 	if (pcie->hw->tunneled) {
 		ret = apple_pcie_tunnel_add_links(pcie);
+		if (ret)
+			return ret;
+	}
+
+	/* Every function is added after this and removed before devres runs. */
+	if (pcie->tunnel_cold_init) {
+		pcie->tunnel_pci_nb.notifier_call = apple_pcie_tunnel_pci_notify;
+		ret = bus_register_notifier(&pci_bus_type, &pcie->tunnel_pci_nb);
+		if (ret)
+			return ret;
+		ret = devm_add_action_or_reset(dev, apple_pcie_tunnel_pci_unregister,
+					       pcie);
 		if (ret)
 			return ret;
 	}
