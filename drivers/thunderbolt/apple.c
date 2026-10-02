@@ -511,7 +511,10 @@ apple_cio_pcie_tunnel_is_preinitialized(struct device_node *parent)
 					  &status) && status == 1)
 			return true;
 		/* t8103 brings the port up itself. */
-		return of_property_read_bool(child, "apple,pciec-kernel-init");
+		if (of_property_read_bool(child, "apple,pciec-kernel-init"))
+			return true;
+		/* T600x/T602x without a handoff, when opted in. */
+		return apple_pcie_tunnel_needs_cold_init(child);
 	}
 
 	return false;
@@ -935,7 +938,7 @@ static int apple_cio_activate_pcie_tunnel_locked(struct apple_cio *acio)
 	}
 	if (!acio->pcie_tunnel_preinitialized)
 		return dev_err_probe(acio->dev, -ENODEV,
-				     "PCIe-C requires a successful m1n1 preinit handoff\n");
+				     "PCIe-C is not initialized by m1n1 or the kernel\n");
 
 	if (acio->pd_list->num_pds < 4 || !acio->pd_list->pd_links[3])
 		return dev_err_probe(acio->dev, -ENODEV,
@@ -2254,7 +2257,7 @@ static int apple_cio_probe(struct platform_device *pdev)
 				acio->pcie_tunnel_np);
 		if (!acio->pcie_tunnel_preinitialized) {
 			dev_warn(dev,
-				 "PCIe-C tunnel disabled: m1n1 handoff is not initialized\n");
+				 "PCIe-C tunnel disabled: not initialized by m1n1 or the kernel\n");
 		} else {
 			ret = apple_cio_map_pcie_intr2axi(acio);
 			if (ret)
