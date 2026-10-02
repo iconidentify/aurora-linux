@@ -584,6 +584,7 @@
 			#iommu-cells = <1>;
 			apple,dma-range = <0x0 0x80000000 0x0 0x80000000>;
 			apple,dma-offset = <0x100 0x0>;
+#include "t602x-pciec-dart-tunables.dtsi"
 		};
 
 		DIE_NODE(apciec0): pcie@730000000 {
@@ -812,6 +813,7 @@
 			#iommu-cells = <1>;
 			apple,dma-range = <0x0 0x80000000 0x0 0x80000000>;
 			apple,dma-offset = <0x100 0x0>;
+#include "t602x-pciec-dart-tunables.dtsi"
 		};
 
 		DIE_NODE(apciec1): pcie@b30000000 {
@@ -1040,6 +1042,7 @@
 			#iommu-cells = <1>;
 			apple,dma-range = <0x0 0x80000000 0x0 0x80000000>;
 			apple,dma-offset = <0x100 0x0>;
+#include "t602x-pciec-dart-tunables.dtsi"
 		};
 
 		DIE_NODE(apciec2): pcie@f30000000 {
