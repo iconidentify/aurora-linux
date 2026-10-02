@@ -12,6 +12,7 @@ struct notifier_block;
 int apple_pcie_tunnel_register_notifier(struct notifier_block *nb);
 void apple_pcie_tunnel_unregister_notifier(struct notifier_block *nb);
 
+bool apple_pcie_tunnel_needs_cold_init(struct device_node *np);
 int apple_pcie_tunnel_prepare(struct device *dev, struct device_node *tunnel);
 int apple_pcie_tunnel_quiesce(struct device *dev);
 int apple_pcie_tunnel_restore(struct device *dev);

@@ -65,6 +65,54 @@ static int link_up_timeout = 500;
 module_param(link_up_timeout, int, 0644);
 MODULE_PARM_DESC(link_up_timeout, "PCIe link training timeout in milliseconds");
 
+static bool tunnel_kernel_init;
+module_param(tunnel_kernel_init, bool, 0444);
+MODULE_PARM_DESC(tunnel_kernel_init,
+		 "Cold-initialize T600x/T602x PCIe-C ports without an m1n1 handoff (experimental)");
+
+static const char *const apple_pcie_tunnel_cold_init_machines[] = {
+	"apple,t6000", "apple,t6001", "apple,t6020", "apple,t6021", NULL
+};
+
+/**
+ * apple_pcie_tunnel_needs_cold_init() - whether the kernel brings up a port
+ * @np: PCIe-C host node
+ *
+ * No m1n1 performs the PCIe-C preinit handoff on T600x/T602x. With the
+ * opt-in parameter the kernel cold-initializes these ports instead. It is a
+ * parameter rather than a DT property because m1n1 hands every installed
+ * kernel the same DT. The tunnel's DART cannot probe without its tunables,
+ * which m1n1 does not provide, so ports whose DART lacks them are refused.
+ *
+ * Unlike "apple,pciec-kernel-init" (t8103), this does not select the t8103
+ * power and resume sequences.
+ */
+bool apple_pcie_tunnel_needs_cold_init(struct device_node *np)
+{
+	struct device_node *dart = NULL;
+	bool tunables;
+	u32 status;
+
+	if (!tunnel_kernel_init ||
+	    !of_device_is_compatible(np, "apple,t6000-pciec") ||
+	    !of_machine_compatible_match(apple_pcie_tunnel_cold_init_machines))
+		return false;
+
+	if (!of_property_read_u32(np, "apple,pciec-preinit-status", &status) &&
+	    status == 1)
+		return false;
+
+	if (of_map_id(np, 0, "iommu-map", "iommu-map-mask", &dart, NULL) || !dart)
+		return false;
+	tunables = of_property_present(dart, "apple,tunable");
+	if (!tunables)
+		pr_warn_once("%pOF: no PCIe-C DART tunables, not cold-initializing\n",
+			     dart);
+	of_node_put(dart);
+	return tunables;
+}
+EXPORT_SYMBOL_GPL(apple_pcie_tunnel_needs_cold_init);
+
 /* T8103 (original M1) and related SoCs */
 #define CORE_RC_PHYIF_CTL		0x00024
 #define   CORE_RC_PHYIF_CTL_RUN		BIT(0)
@@ -263,6 +311,7 @@ struct apple_pcie {
 	struct apple_tunable	*oe_fabric_tunable;
 	bool			power_retained;
 	bool			kernel_init;
+	bool			tunnel_cold_init;
 	bool			bus_stopped;
 	bool			reset_on_resume;
 	bool			link_kept;
@@ -785,7 +834,10 @@ static void apple_pcie_tunnel_reset_hardware(struct apple_pcie_port *port)
 	for (i = 0; i < ARRAY_SIZE(apple_pcie_tunnel_reset_regs); i++) {
 		u32 value = apple_pcie_tunnel_reset_regs[i].value;
 
-		/* t8103 writes 0. 0x208 is the value used when firmware left the port up. */
+		/*
+		 * t8103 writes 0. 0x208 is the value used when firmware left the
+		 * port up; T600x/T602x cold init without a handoff uses it too.
+		 */
 		if (port->pcie->kernel_init &&
 		    apple_pcie_tunnel_reset_regs[i].offset == 0x130)
 			value = 0;
@@ -860,10 +912,11 @@ static int apple_pcie_tunnel_reinitialize(struct apple_pcie_port *port)
 }
 
 /*
- * t8103 has no firmware handoff for this port. Bring it up from reset:
- * tunables and the reset table, then PERST and APPCLK, and only then the
- * root-port config-space tunables. Stop before releasing the tunnel reset
- * or starting link training.
+ * Bring up a port that no firmware handoff left running (t8103, or
+ * T600x/T602x with pcie_apple.tunnel_kernel_init): tunables and the reset
+ * table, then PERST and APPCLK, and only then the root-port config-space
+ * tunables. Stop before releasing the tunnel reset or starting link
+ * training.
  */
 static int apple_pcie_tunnel_cold_init(struct apple_pcie_port *port)
 {
@@ -887,15 +940,33 @@ static int apple_pcie_tunnel_cold_init(struct apple_pcie_port *port)
 		 port->np);
 	apple_pcie_port_rmw_set(port, PORT_PERST_OFF, pcie->hw->port_perst);
 	apple_pcie_port_rmw_set(port, PORT_APPCLK_EN, PORT_APPCLK);
-	apple_pcie_port_rmw_clear(port, PORT_APPCLK_CGDIS, PORT_APPCLK);
+	/*
+	 * Without an m1n1 handoff, T600x/T602x ports must report RUN before
+	 * the root complex config space is written: writing the RC tunables
+	 * first hard-resets a J416c.
+	 */
+	if (!pcie->kernel_init) {
+		ret = read_poll_timeout_atomic(apple_pcie_port_readl, stat,
+					       stat & PORT_STATUS_READY,
+					       10, 250000, false, port,
+					       PORT_STATUS);
+		if (ret)
+			return dev_err_probe(pcie->dev, ret,
+					     "port %pOF cold init: RUN not set (status %#x)\n",
+					     port->np, stat);
+	} else {
+		apple_pcie_port_rmw_clear(port, PORT_APPCLK_CGDIS, PORT_APPCLK);
+	}
 
-	dev_info(pcie->dev, "port %pOF cold init: oe-fabric and root tunables\n",
-		 port->np);
+	dev_info(pcie->dev, "port %pOF cold init: %sroot tunables\n",
+		 port->np, pcie->oe_fabric_base ? "oe-fabric and " : "");
 	if (pcie->oe_fabric_base)
 		apple_pcie_tunnel_apply_tunable(pcie->oe_fabric_base,
 						pcie->oe_fabric_tunable);
 	apple_pcie_tunnel_apply_tunable(pcie->cfg ? pcie->cfg->win : pcie->early_cfg,
 					pcie->rc_tunable);
+	if (!pcie->kernel_init)
+		apple_pcie_port_rmw_clear(port, PORT_APPCLK_CGDIS, PORT_APPCLK);
 
 	apple_pcie_port_writel(port, PORT_COUNTER_ENABLE, PORT_COUNTER_CTRL);
 	apple_pcie_port_writel(port, ~0, PORT_INTSTAT);
@@ -1479,13 +1550,14 @@ static int apple_pcie_setup_port(struct apple_pcie *pcie,
 		 * m1n1 owns PCIe-C cold initialization on T6020. Replaying the
 		 * port reset against that live handoff raises an asynchronous
 		 * SError. t8103 boots with ATC_PCIE off and no handoff, so
-		 * apple,pciec-kernel-init selects the in-kernel sequence.
+		 * apple,pciec-kernel-init selects the in-kernel sequence, as
+		 * pcie_apple.tunnel_kernel_init does on T600x/T602x.
 		 */
 		ret = of_property_read_u32(pcie->dev->of_node,
 					   "apple,pciec-preinit-status",
 					   &preinit_status);
 		preinit_ok = !ret && preinit_status == 1;
-		if (pcie->kernel_init && !preinit_ok) {
+		if ((pcie->kernel_init || pcie->tunnel_cold_init) && !preinit_ok) {
 			stat = apple_pcie_port_readl(port, PORT_STATUS);
 			if (stat & PORT_STATUS_READY) {
 				dev_info(pcie->dev,
@@ -1498,7 +1570,7 @@ static int apple_pcie_setup_port(struct apple_pcie *pcie,
 			}
 		} else if (!preinit_ok) {
 			dev_err(pcie->dev,
-				"PCIe-C requires a successful m1n1 preinit handoff\n");
+				"PCIe-C requires an m1n1 preinit handoff or pcie_apple.tunnel_kernel_init=1\n");
 			ret = -ENODEV;
 			goto err_teardown;
 		} else {
@@ -2350,6 +2422,8 @@ static int apple_pcie_probe(struct platform_device *pdev)
 	if (pcie->hw->tunneled) {
 		pcie->kernel_init = of_property_read_bool(dev->of_node,
 							  "apple,pciec-kernel-init");
+		pcie->tunnel_cold_init =
+			apple_pcie_tunnel_needs_cold_init(dev->of_node);
 		ret = apple_pcie_tunnel_init_resources(pdev, pcie);
 		if (ret)
 			return ret;
@@ -2698,14 +2772,16 @@ int apple_pcie_tunnel_prepare(struct device *dev, struct device_node *tunnel)
 	struct apple_pcie *pcie;
 	struct apple_pcie_port *port;
 	struct apple_pcie_map config = {}, debug = {}, fabric = {}, portmap = {};
-	struct apple_pcie_map oe = {};
+	struct apple_pcie_map oe = {}, intr2axi = {};
+	bool kernel_init = false;
 	u32 stat;
 	int ret;
 
 	np = NULL;
 	for_each_available_child_of_node(tunnel, np) {
-		if (of_device_is_compatible(np, "apple,t8103-pciec") &&
-		    of_property_read_bool(np, "apple,pciec-kernel-init"))
+		kernel_init = of_device_is_compatible(np, "apple,t8103-pciec") &&
+			      of_property_read_bool(np, "apple,pciec-kernel-init");
+		if (kernel_init || apple_pcie_tunnel_needs_cold_init(np))
 			break;
 	}
 	if (!np)
@@ -2738,7 +2814,11 @@ int apple_pcie_tunnel_prepare(struct device *dev, struct device_node *tunnel)
 	ret = apple_pcie_map_named(np, "fabric", &fabric);
 	if (ret)
 		goto out_np;
-	ret = apple_pcie_map_named(np, "oe-fabric", &oe);
+	/* t8103 has an oe-fabric region; T600x/T602x pulse Intr2AXI instead. */
+	if (kernel_init)
+		ret = apple_pcie_map_named(np, "oe-fabric", &oe);
+	else
+		ret = apple_pcie_map_named(np, "intr2axi", &intr2axi);
 	if (ret)
 		goto out_np;
 
@@ -2757,11 +2837,12 @@ int apple_pcie_tunnel_prepare(struct device *dev, struct device_node *tunnel)
 
 	pcie->dev = dev;
 	pcie->hw = match->data;
-	pcie->kernel_init = true;
+	pcie->kernel_init = kernel_init;
 	pcie->early_cfg = config.base;
 	pcie->debug_base = debug.base;
 	pcie->fabric_base = fabric.base;
 	pcie->oe_fabric_base = oe.base;
+	pcie->intr2axi_base = intr2axi.base;
 	pcie->debug_tunable = apple_pcie_tunable_once(np, "apple,tunable-debug",
 						      &debug.res);
 	if (IS_ERR(pcie->debug_tunable)) {
@@ -2783,13 +2864,15 @@ int apple_pcie_tunnel_prepare(struct device *dev, struct device_node *tunnel)
 		pcie->rc_tunable = NULL;
 		goto out_free;
 	}
-	pcie->oe_fabric_tunable = apple_pcie_tunable_once(np,
-							 "apple,tunable-oe-fabric",
-							 &oe.res);
-	if (IS_ERR(pcie->oe_fabric_tunable)) {
-		ret = PTR_ERR(pcie->oe_fabric_tunable);
-		pcie->oe_fabric_tunable = NULL;
-		goto out_free;
+	if (oe.base) {
+		pcie->oe_fabric_tunable =
+			apple_pcie_tunable_once(np, "apple,tunable-oe-fabric",
+						&oe.res);
+		if (IS_ERR(pcie->oe_fabric_tunable)) {
+			ret = PTR_ERR(pcie->oe_fabric_tunable);
+			pcie->oe_fabric_tunable = NULL;
+			goto out_free;
+		}
 	}
 
 	port->pcie = pcie;
@@ -2828,6 +2911,7 @@ out_np:
 	apple_pcie_unmap(&fabric);
 	apple_pcie_unmap(&portmap);
 	apple_pcie_unmap(&oe);
+	apple_pcie_unmap(&intr2axi);
 	of_node_put(np);
 	return ret;
 }
