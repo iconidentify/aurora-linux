@@ -3050,7 +3050,8 @@ static bool apple_pcie_keep_link(struct apple_pcie *pcie)
 {
 	if (!READ_ONCE(s2idle_keep_link) || !pm_suspend_no_platform())
 		return false;
-	if (!pcie->kernel_init || !pcie->power_retained)
+	if (!(pcie->kernel_init || pcie->tunnel_cold_init) ||
+	    !pcie->power_retained)
 		return false;
 	if (pcie->bus_stopped || pcie->resume_failed)
 		return false;
@@ -3160,8 +3161,18 @@ static int apple_pcie_resume_noirq(struct device *dev)
 		pcie->link_kept = false;
 		if (apple_pcie_tunnel_link_healthy(pcie))
 			return 0;
-		/* Lost while asleep: take the same path as a stopped tunnel. */
 		dev_warn(dev, "PCIe-C link lost during suspend-to-idle\n");
+		/*
+		 * A cold-initialized T600x/T602x port does not train again after
+		 * an in-place restart. Fail like a surprise unplug instead: ACIO
+		 * revalidates the connection after resume and replaces this host
+		 * with a freshly cold-initialized one.
+		 */
+		if (pcie->tunnel_cold_init) {
+			ret = -ENOLINK;
+			goto failed;
+		}
+		/* Lost while asleep: take the same path as a stopped tunnel. */
 		apple_pcie_stop_for_sleep(dev);
 	}
 	if (pcie->reset_on_resume) {
