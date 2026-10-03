@@ -90,9 +90,8 @@
 };
 
 /*
- * The ANE has run on the M1 Max, so enable it here with its DARTs and the
- * power states only it uses. t6000.dtsi defines APPLE_ANE_UNTESTED before
- * including this file: the ANE has not run on the M1 Pro yet.
+ * The ANE has run on the M1 Max and the M1 Pro, so enable it here with its
+ * DARTs and the power states only it uses. t6000.dtsi includes this file.
  */
 #ifndef APPLE_ANE_UNTESTED
 &ane {
