@@ -3157,6 +3157,14 @@ static int apple_pcie_resume_noirq(struct device *dev)
 		return 0;
 	if (pcie->resume_failed)
 		return -EIO;
+	/*
+	 * A host quiesced by a tunnel deactivation has no hierarchy and its
+	 * ports are stopped. Leave them stopped: restarting them without a
+	 * tunnel fails and marks the host dead, while
+	 * apple_pcie_tunnel_restore() restarts them on reactivation.
+	 */
+	if (pcie->bus_stopped)
+		return 0;
 	if (pcie->link_kept) {
 		pcie->link_kept = false;
 		if (apple_pcie_tunnel_link_healthy(pcie))
