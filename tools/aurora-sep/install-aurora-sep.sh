@@ -70,8 +70,8 @@ set -euo pipefail
 
 # The kernel package version and the release tag move independently: a release
 # that only changes m1n1 reuses the previous kernel packages unchanged.
-VERSION=7.1.12.aurora2-11.25
-TAG=sep-7.1.12.aurora2-11.25.1
+VERSION=7.1.12.aurora2-11.27
+TAG=sep-7.1.12.aurora2-11.27-rc1
 # Packages are fetched from this script's own tag, never from "latest": the
 # checksums below belong to this release and nothing else.
 RELEASE_URL=https://github.com/iconidentify/aurora-linux/releases/download/$TAG
@@ -79,8 +79,8 @@ RELEASES_API=https://api.github.com/repos/iconidentify/aurora-linux/releases
 # Where to always get the current script, whatever this copy turns out to be.
 LATEST_URL=https://github.com/iconidentify/aurora-linux/releases/latest/download/install-aurora-sep.sh
 PACKAGES=(
-  "linux-aurora-$VERSION-aarch64.pkg.tar.zst f8b78b21f4031113a06c7f7fc7cbe1d72a23ba803adfcfc838ee3e927d3d0c85"
-  "linux-aurora-headers-$VERSION-aarch64.pkg.tar.zst a1a1524ccc35b4b4c82e4a01fda90ae13c43719ecb8dfc8108fa9a008d9500e6"
+  "linux-aurora-$VERSION-aarch64.pkg.tar.zst 15f5ea38a83411933d6b2306263d4258b75754ce64f6eaa0894c3ff7d0828c77"
+  "linux-aurora-headers-$VERSION-aarch64.pkg.tar.zst 49cdc4a9041d2367591b69ed0bffb5cd29963f89cb16baeea65ced48475ca2c1"
   "libfprint-1.94.100-1.1-aarch64.pkg.tar.zst bc7d9762db6644f2cfb58ddb209602c1d513845eb1498c098e01f12600fcbdf9"
   "aurora-touchid-20261002-1-any.pkg.tar.zst a9dda6e0526874e4ac760629f3aa5bd37421379a1d8af34000f3dc7b73a21b17"
   "m1n1-aurora-1.6.1.aurora3-1-aarch64.pkg.tar.zst bc3451aaa88bc3f4912bc3613f9569aa8f3e05f376fa851fa837b5e2080e8c2f"
