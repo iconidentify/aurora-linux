@@ -1682,7 +1682,7 @@ static int apple_pcie_setup_port(struct apple_pcie *pcie,
 	 * A TB3 dock answers CRS for a while after LTSSM start. Wait before
 	 * the bus scan that follows apple_pcie_init().
 	 */
-	if (pcie->hw->tunneled && pcie->kernel_init)
+	if (pcie->hw->tunneled && (pcie->kernel_init || pcie->tunnel_cold_init))
 		msleep(1000);
 	if (pcie->hw->tunneled)
 		WRITE_ONCE(port->started, true);
