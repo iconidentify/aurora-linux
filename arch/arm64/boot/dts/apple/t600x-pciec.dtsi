@@ -16,6 +16,7 @@
 			interrupt-parent = <&aic>;
 			interrupts = <AIC_IRQ 0 1198 IRQ_TYPE_LEVEL_HIGH>;
 			#iommu-cells = <1>;
+			apple,dma-range = <0x0 0x0 0x1 0x0>;
 #include "t600x-pciec-dart-tunables.dtsi"
 		};
 
@@ -85,6 +86,7 @@
 			interrupt-parent = <&aic>;
 			interrupts = <AIC_IRQ 0 1215 IRQ_TYPE_LEVEL_HIGH>;
 			#iommu-cells = <1>;
+			apple,dma-range = <0x0 0x0 0x1 0x0>;
 #include "t600x-pciec-dart-tunables.dtsi"
 		};
 
@@ -154,6 +156,7 @@
 			interrupt-parent = <&aic>;
 			interrupts = <AIC_IRQ 0 1232 IRQ_TYPE_LEVEL_HIGH>;
 			#iommu-cells = <1>;
+			apple,dma-range = <0x0 0x0 0x1 0x0>;
 #include "t600x-pciec-dart-tunables.dtsi"
 		};
 
@@ -223,6 +226,7 @@
 			interrupt-parent = <&aic>;
 			interrupts = <AIC_IRQ 0 1249 IRQ_TYPE_LEVEL_HIGH>;
 			#iommu-cells = <1>;
+			apple,dma-range = <0x0 0x0 0x1 0x0>;
 		};
 
 		apciec3: pcie@1330000000 {
