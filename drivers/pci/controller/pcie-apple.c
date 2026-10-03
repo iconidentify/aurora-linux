@@ -313,6 +313,7 @@ struct apple_pcie {
 	bool			power_retained;
 	bool			kernel_init;
 	bool			tunnel_cold_init;
+	unsigned long		tunnel_ready_at;
 	struct notifier_block	tunnel_pci_nb;
 	bool			bus_stopped;
 	bool			reset_on_resume;
@@ -1028,6 +1029,33 @@ static void apple_pcie_tunnel_restore_irq_hw(struct apple_pcie_port *port)
 	apple_pcie_port_writel(port, value | PORT_MSICFG_EN, PORT_MSICFG);
 }
 
+/*
+ * Functions behind a Thunderbolt dock come up after the tunnel link does. On
+ * a CalDigit TS3 Plus the I210 and the Alpine Ridge xHCI answer at link-up,
+ * but the dock's FL1100 and ASM1142 xHCIs train their links later, behind
+ * switch ports that are not hotplug-capable, so a scan before then misses
+ * them for good. PCIe allows a function 1 s after reset before it has to
+ * answer configuration requests (PCIe r6.0, sec 6.6.1; PCI_RESET_WAIT in the
+ * PCI core), so the bus behind a tunnel is scanned only once its link has
+ * been up that long. This applies to every tunnel, on every SoC.
+ */
+#define APPLE_PCIE_TUNNEL_READY_MS	1000
+
+static void apple_pcie_tunnel_link_up(struct apple_pcie *pcie)
+{
+	WRITE_ONCE(pcie->tunnel_ready_at,
+		   jiffies + msecs_to_jiffies(APPLE_PCIE_TUNNEL_READY_MS));
+}
+
+/* Call before scanning the bus behind a tunnel; elapsed time counts. */
+static void apple_pcie_tunnel_wait_ready(struct apple_pcie *pcie)
+{
+	long left = (long)(READ_ONCE(pcie->tunnel_ready_at) - jiffies);
+
+	if (left > 0)
+		msleep(jiffies_to_msecs(left));
+}
+
 static int apple_pcie_tunnel_start(struct apple_pcie_port *port)
 {
 	struct apple_pcie *pcie = port->pcie;
@@ -1166,6 +1194,7 @@ static int apple_pcie_tunnel_start(struct apple_pcie_port *port)
 		return ret;
 	}
 restored:
+	apple_pcie_tunnel_link_up(pcie);
 	/* Publish ownership before unmasking a possible link-down event. */
 	WRITE_ONCE(port->started, true);
 	/* The port helper uses a relaxed MMIO write. */
@@ -1678,12 +1707,9 @@ static int apple_pcie_setup_port(struct apple_pcie *pcie,
 			dev_info(pcie->dev, "%pOF link up after %ldms\n", np,
 				 (timeout - left) * 1000 / HZ);
 	}
-	/*
-	 * A TB3 dock answers CRS for a while after LTSSM start. Wait before
-	 * the bus scan that follows apple_pcie_init().
-	 */
-	if (pcie->hw->tunneled && (pcie->kernel_init || pcie->tunnel_cold_init))
-		msleep(1000);
+	if (pcie->hw->tunneled &&
+	    (apple_pcie_port_readl(port, PORT_LINKSTS) & PORT_LINKSTS_UP))
+		apple_pcie_tunnel_link_up(pcie);
 	if (pcie->hw->tunneled)
 		WRITE_ONCE(port->started, true);
 	if (pcie->hw->root_bus_only)
@@ -1920,6 +1946,9 @@ static int apple_pcie_init(struct pci_config_window *cfg)
 			return ret;
 		}
 	}
+
+	/* The bus scan follows this callback. */
+	apple_pcie_tunnel_wait_ready(pcie);
 
 	return 0;
 }
@@ -2679,6 +2708,7 @@ int apple_pcie_tunnel_restore(struct device *dev)
 	if (ret)
 		return ret;
 
+	apple_pcie_tunnel_wait_ready(pcie);
 	pci_lock_rescan_remove();
 	pci_rescan_bus(bridge->bus);
 	pci_walk_bus(bridge->bus, apple_pcie_tunnel_keep_d0, NULL);
