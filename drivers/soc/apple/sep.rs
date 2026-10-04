@@ -669,6 +669,8 @@ struct SepData {
 
     enrol_frames_accepted: Atomic<u32>,
 
+    enrol_images_sent: Atomic<u32>,
+
     rng_shutdown: Atomic<bool>,
 
     rng_failures: Atomic<u64>,
@@ -867,6 +869,7 @@ impl SepData {
                 machine_refkey <- new_mutex!(None),
                 fv_volumes <- new_mutex!(KVec::new()),
                 enrol_frames_accepted: Atomic::new(0),
+                enrol_images_sent: Atomic::new(0),
                 rng_shutdown: Atomic::new(false),
                 rng_failures: Atomic::new(0),
                 rng_survey_attempts: Atomic::new(0),

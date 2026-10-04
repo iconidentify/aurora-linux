@@ -1578,6 +1578,7 @@ impl SepData {
             return;
         }
         self.enrol_frames_accepted.store(0, Relaxed);
+        self.enrol_images_sent.store(0, Relaxed);
 
         if !self.bring_sensor_online() {
             dev_err!(self.dev, "enrol: the sensor did not come back online\n");
@@ -2304,11 +2305,14 @@ impl SepData {
         }
         let _image = ImageContext { sep: self };
 
+        // Number only the images the enclave receives. A frame lost to a bad
+        // read never reaches it, so the next one is still the first.
+        let sent = self.enrol_images_sent.fetch_add(1, Relaxed);
         let init = crate::sbio::sbio_image_processing_init(
             crate::sbio::ImagePurpose::Enrolment,
-            counter == 0,
+            sent == 0,
             false,
-            counter,
+            sent,
             user,
             crate::shim::monotonic_ns(),
         );
