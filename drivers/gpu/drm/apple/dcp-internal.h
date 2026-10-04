@@ -318,6 +318,20 @@ struct apple_dcp {
 	 */
 	struct mutex tb_lock;
 	bool tb_clock_ok;
+	/*
+	 * Tiled display (LG UltraFine 5K): the second Thunderbolt DP IN of the
+	 * same port drives DPTX port 1 of this pipeline, so DCP sees both tiles
+	 * and presents one display. Under tb_lock like the fields above.
+	 */
+	struct {
+		bool active;
+		struct mux_control *xbar;	/* the port's dpin1 crossbar control */
+		int mux_state;			/* dispextN, DPTX port 1 */
+		bool xbar_up;
+		bool clock_ok;
+		int (*set_active)(void *ctx, bool active);
+		void *ctx;
+	} split;
 	/* CRTC powered off while the Type-C cable stays attached */
 	bool typec_crtc_off;
 	/* IOMFB reports its video interface ready after DPTX link training. */

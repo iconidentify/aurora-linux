@@ -77,10 +77,11 @@ int dcp_dptx_disconnect_oob(struct platform_device *pdev, u32 port);
 struct apple_dcp;
 struct phy;
 /* Thunderbolt DP tunnels, called from the DPTX endpoint */
-int dcp_tunnel_crossbar_up(struct apple_dcp *dcp);
-int dcp_tunnel_crossbar_down(struct apple_dcp *dcp);
-int dcp_tunnel_set_rate(struct apple_dcp *dcp, struct phy *phy, u32 link_rate);
-int dcp_tunnel_dpin_activate(struct apple_dcp *dcp, bool active);
+int dcp_tunnel_crossbar_up(struct apple_dcp *dcp, u32 unit);
+int dcp_tunnel_crossbar_down(struct apple_dcp *dcp, u32 unit);
+int dcp_tunnel_set_rate(struct apple_dcp *dcp, struct phy *phy, u32 unit,
+			u32 link_rate);
+int dcp_tunnel_dpin_activate(struct apple_dcp *dcp, u32 unit, bool active);
 
 int iomfb_start_rtkit(struct apple_dcp *dcp);
 void iomfb_shutdown(struct apple_dcp *dcp);
