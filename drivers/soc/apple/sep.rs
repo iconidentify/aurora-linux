@@ -108,8 +108,11 @@ const OOL_SIZE_SCRD: usize = 0x4000;
 
 const SBIO_TIMEOUT_MS: time::Msecs = 5000;
 
-// How long going to sleep waits for an ended capture to stop: one enclave
-// request in flight, plus the capture loop's interrupt-wait backstop.
+// How long going to sleep waits for an ended capture to stop. The capture's
+// waits and pauses notice the end within a poll or the interrupt wait's
+// backstop, so this mostly covers enclave requests in flight. A sensor
+// bring-up or a chain of enclave requests already under way runs to its end,
+// and in a slow case can outlast this; sleep then goes ahead with a warning.
 const SLEEP_DRAIN_MS: u32 = 6000;
 static_assert!(SLEEP_DRAIN_MS as u64 > SBIO_TIMEOUT_MS as u64);
 

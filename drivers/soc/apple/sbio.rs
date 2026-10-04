@@ -141,12 +141,31 @@ impl SepData {
         }
         let remaining = MATCH_SETTLE_MS - elapsed_ms as u32;
         let _ = sensor::idle();
-        kernel::time::delay::fsleep(kernel::time::Delta::from_millis(i64::from(remaining)));
+        self.pause_while(remaining, || bio::verify_is_live(&self.bio_session.lock()));
     }
 
-    // Returns as soon as the enrolment ends (a cancel, a close, the system
-    // going to sleep), so neither the next operation nor a suspend waits out a
-    // pause meant for the person.
+    /// Sleeps for `ms`, timed by the clock in steps of at most `PATCH_POLL_MS`,
+    /// and returns false as soon as `live` stops holding. The checks do not
+    /// stretch the pause.
+    fn pause_while(&self, ms: u32, live: impl Fn() -> bool) -> bool {
+        let start = shim::boottime_ns();
+        loop {
+            if !live() {
+                return false;
+            }
+            let elapsed_ms = shim::boottime_ns().saturating_sub(start) / 1_000_000;
+            if elapsed_ms >= u64::from(ms) {
+                return true;
+            }
+            // below `ms`, so it fits
+            let step = (ms - elapsed_ms as u32).min(PATCH_POLL_MS);
+            kernel::time::delay::fsleep(kernel::time::Delta::from_millis(i64::from(step)));
+        }
+    }
+
+    /// Returns as soon as the enrolment ends (a cancel, a close, the system
+    /// going to sleep), so neither the next operation nor a suspend waits out
+    /// a pause meant for the person.
     fn pace_between_captures(&self) {
         let live = || bio::enrol_is_live(&self.bio_session.lock());
         let _ = sensor::idle();
@@ -157,21 +176,12 @@ impl SepData {
             }
             dev_warn!(
                 self.dev,
-                "enrol: sensor did not report idle within {} ms; continuing the reposition wait anyway (pause is for the person)\n",
+                "enrol: sensor did not report idle (waited up to {} ms); continuing the reposition wait anyway (pause is for the person)\n",
                 PATCH_POLL_ATTEMPTS * PATCH_POLL_MS
             );
         }
 
-        // Timed by the clock, so the checks between steps do not stretch it.
-        let start = shim::boottime_ns();
-        loop {
-            let elapsed_ms = shim::boottime_ns().saturating_sub(start) / 1_000_000;
-            if elapsed_ms >= u64::from(ENROL_REPOSITION_MS) || !live() {
-                return;
-            }
-            let step = (u64::from(ENROL_REPOSITION_MS) - elapsed_ms).min(u64::from(PATCH_POLL_MS));
-            kernel::time::delay::fsleep(kernel::time::Delta::from_millis(step as i64));
-        }
+        self.pause_while(ENROL_REPOSITION_MS, live);
     }
 
     fn stash_enrol_identity(&self, record: &[u8]) {
@@ -1381,6 +1391,13 @@ impl SepData {
 
         self.settle_before_capture();
 
+        // Nothing above checks the session before the settle, and nothing below
+        // until the capture starts. A verify cancelled, replaced or ended by
+        // sleep in the meantime stops here, before the sensor comes up.
+        if !bio::verify_is_live(&self.bio_session.lock()) {
+            return;
+        }
+
         // The enclave refuses a capture from an uncalibrated sensor (0x65 answers 1).
         if !self.bring_sensor_online() {
             dev_err!(self.dev, "verify: the sensor did not come back online\n");
@@ -1637,6 +1654,12 @@ impl SepData {
                     }
                     // completion is the flag at offset 0xbfe, not a derived stage count
                     if complete {
+                        // Cancelled while its last capture was processed: do not
+                        // commit the template. `open` cancels the enrolment as it
+                        // drops, as for a cancel at any earlier capture.
+                        if !bio::enrol_is_live(&self.bio_session.lock()) {
+                            break None;
+                        }
                         if !has_template {
                             dev_err!(
                                 self.dev,
@@ -2816,9 +2839,10 @@ impl SepData {
         Ok(())
     }
 
-    // Enqueueing fails only while the work is queued and not yet running. It
-    // has then not claimed the session, so it serves the operation just
-    // started.
+    // Enqueueing fails only while the work is still queued and not yet
+    // running, or disabled while the device goes away, when ioctls no longer
+    // reach here. A queued run has not claimed the session, so it serves the
+    // operation just started.
     pub(crate) fn queue_enrolment(this: Arc<SepData>) {
         let _ = workqueue::system().enqueue::<Arc<SepData>, ENROL_WORK_ID>(this);
     }
