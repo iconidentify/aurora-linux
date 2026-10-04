@@ -144,20 +144,34 @@ impl SepData {
         kernel::time::delay::fsleep(kernel::time::Delta::from_millis(i64::from(remaining)));
     }
 
+    // Returns as soon as the enrolment ends (a cancel, a close, the system
+    // going to sleep), so neither the next operation nor a suspend waits out a
+    // pause meant for the person.
     fn pace_between_captures(&self) {
+        let live = || bio::enrol_is_live(&self.bio_session.lock());
         let _ = sensor::idle();
 
-        if !self.await_sensor_state(sensor::STATE_IDLE, c"idle, between captures") {
+        if !self.await_sensor_state(sensor::STATE_IDLE, c"idle, between captures", live) {
+            if !live() {
+                return;
+            }
             dev_warn!(
                 self.dev,
-                "enrol: sensor did not idle within {} ms; continuing the reposition wait anyway (pause is for the person)\n",
-                ENROL_IDLE_TIMEOUT_MS
+                "enrol: sensor did not report idle within {} ms; continuing the reposition wait anyway (pause is for the person)\n",
+                PATCH_POLL_ATTEMPTS * PATCH_POLL_MS
             );
         }
 
-        kernel::time::delay::fsleep(kernel::time::Delta::from_millis(i64::from(
-            ENROL_REPOSITION_MS,
-        )));
+        // Timed by the clock, so the checks between steps do not stretch it.
+        let start = shim::boottime_ns();
+        loop {
+            let elapsed_ms = shim::boottime_ns().saturating_sub(start) / 1_000_000;
+            if elapsed_ms >= u64::from(ENROL_REPOSITION_MS) || !live() {
+                return;
+            }
+            let step = (u64::from(ENROL_REPOSITION_MS) - elapsed_ms).min(u64::from(PATCH_POLL_MS));
+            kernel::time::delay::fsleep(kernel::time::Delta::from_millis(step as i64));
+        }
     }
 
     fn stash_enrol_identity(&self, record: &[u8]) {
@@ -2136,7 +2150,11 @@ impl SepData {
             return None;
         }
 
-        if !self.await_sensor_state(sensor::STATE_IDLE, c"idle, before sending the patch") {
+        if !self.await_sensor_state(
+            sensor::STATE_IDLE,
+            c"idle, before sending the patch",
+            || true,
+        ) {
             dev_warn!(self.dev, "sensor patch: the sensor did not reach idle before the patch\n");
             return None;
         }
@@ -2182,8 +2200,14 @@ impl SepData {
         None
     }
 
-    fn await_sensor_state(&self, want: u8, _why: &CStr) -> bool {
+    /// Polls for up to `PATCH_POLL_ATTEMPTS * PATCH_POLL_MS` until the sensor
+    /// reports `want`. Gives up early if the status cannot be read or
+    /// `still_wanted` stops holding.
+    fn await_sensor_state(&self, want: u8, _why: &CStr, still_wanted: impl Fn() -> bool) -> bool {
         for _attempt in 0..PATCH_POLL_ATTEMPTS {
+            if !still_wanted() {
+                return false;
+            }
             match sensor::status() {
                 Ok(st) if st.state == want => {
                     return true;
