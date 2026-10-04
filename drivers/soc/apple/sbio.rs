@@ -1340,6 +1340,9 @@ impl SepData {
     }
 
     pub(crate) fn run_verify(&self) {
+        if !self.claim_session(bio::verify_is_live) {
+            return;
+        }
         self.retry_restore_proof();
         if !self.templates_restored.load(Relaxed) {
             dev_err!(
@@ -1557,6 +1560,9 @@ impl SepData {
     }
 
     pub(crate) fn run_enrolment(&self) {
+        if !self.claim_session(bio::enrol_is_live) {
+            return;
+        }
         self.enrol_frames_accepted.store(0, Relaxed);
 
         if !self.bring_sensor_online() {
@@ -2720,6 +2726,15 @@ impl SepData {
         self.captures_running.fetch_sub(1, Relaxed);
     }
 
+    /// Claims the session for this capture worker (see [`bio::Session::claim`])
+    /// and returns whether `live` then holds. An operation cancelled and
+    /// replaced before the worker began is not one it serves.
+    fn claim_session(&self, live: fn(&bio::Session) -> bool) -> bool {
+        let mut session = self.bio_session.lock();
+        session.claim();
+        live(&session)
+    }
+
     /// The system is about to suspend. End any capture in progress, hold new
     /// ones, and wait for the enrol or verify work to stop touching the sensor
     /// before devices go down.
@@ -2773,25 +2788,15 @@ impl SepData {
         Ok(())
     }
 
+    // Enqueueing fails only while the work is queued and not yet running. It
+    // has then not claimed the session, so it serves the operation just
+    // started.
     pub(crate) fn queue_enrolment(this: Arc<SepData>) {
-        if workqueue::system()
-            .enqueue::<Arc<SepData>, ENROL_WORK_ID>(this.clone())
-            .is_err()
-        {
-            this.finish_enrolment(Err(ENROL_STATUS_SENSOR));
-        }
+        let _ = workqueue::system().enqueue::<Arc<SepData>, ENROL_WORK_ID>(this);
     }
 
     pub(crate) fn queue_verify(this: Arc<SepData>) {
-        if workqueue::system()
-            .enqueue::<Arc<SepData>, VERIFY_WORK_ID>(this.clone())
-            .is_err()
-        {
-            this.finish_verify(
-                bio::VerifyOutcome::Failed(ENROL_STATUS_SENSOR),
-                [0u8; bio::TOKEN_LEN],
-            );
-        }
+        let _ = workqueue::system().enqueue::<Arc<SepData>, VERIFY_WORK_ID>(this);
     }
 
     fn finish_verify(&self, outcome: bio::VerifyOutcome, token_bytes: [u8; bio::TOKEN_LEN]) {

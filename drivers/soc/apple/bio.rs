@@ -425,6 +425,13 @@ pub(crate) struct Session {
     unseen: bool,
     enrol_stage_unseen: bool,
     token: Option<ResultToken>,
+    // Every start bumps `generation`, which is never reset. The capture worker
+    // claims the generation it serves when it begins, and its operation stays
+    // live only while no later start has replaced it. Otherwise a worker still
+    // winding down a cancelled enrol or verify would carry on into the next one
+    // started on the session, filing its captures and its result there.
+    generation: u32,
+    claimed: u32,
 }
 
 impl Session {
@@ -435,7 +442,23 @@ impl Session {
             unseen: false,
             enrol_stage_unseen: false,
             token: None,
+            generation: 0,
+            claimed: 0,
         }
+    }
+
+    fn started(&mut self) {
+        self.generation = self.generation.wrapping_add(1);
+    }
+
+    /// Called by a capture worker before it acts on the session: it serves the
+    /// operation started most recently, and no earlier one.
+    pub(crate) fn claim(&mut self) {
+        self.claimed = self.generation;
+    }
+
+    fn claimed_current(&self) -> bool {
+        self.claimed == self.generation
     }
 
     fn reset(&mut self) {
@@ -579,6 +602,7 @@ fn enrol_start(ctx: &mut Context<'_>, user: UserPtr) -> Result<Handled> {
         guidance: Guidance::Place,
         percent: 0,
     };
+    ctx.session.started();
     ctx.session.unseen = false;
     ctx.session.enrol_stage_unseen = false;
     Ok(Handled {
@@ -597,6 +621,9 @@ pub(crate) fn enrol_advance(
     percent_now: u32,
     guide: Guidance,
 ) -> bool {
+    if !session.claimed_current() {
+        return false;
+    }
     if let Op::Enrol {
         stage,
         terminal,
@@ -618,6 +645,9 @@ pub(crate) fn enrol_advance(
 }
 
 pub(crate) fn capture_guide(session: &mut Session, guide: Guidance) -> bool {
+    if !session.claimed_current() {
+        return false;
+    }
     let changed = match &mut session.op {
         Op::Enrol { terminal, guidance, .. } => {
             if terminal.is_none() && *guidance != guide {
@@ -648,6 +678,9 @@ pub(crate) fn enrol_finish(
     index: &mut IdentityIndex,
     outcome: core::result::Result<[u8; UUID_LEN], u32>,
 ) -> bool {
+    if !session.claimed_current() {
+        return false;
+    }
     let Op::Enrol {
         label, terminal, ..
     } = &mut session.op
@@ -674,7 +707,9 @@ pub(crate) fn enrol_finish(
 }
 
 pub(crate) fn enrol_is_live(session: &Session) -> bool {
-    matches!(&session.op, Op::Enrol { terminal: None, .. }) && session.open
+    matches!(&session.op, Op::Enrol { terminal: None, .. })
+        && session.open
+        && session.claimed_current()
 }
 
 fn enrol_poll(ctx: &mut Context<'_>, user: UserPtr) -> Result<Handled> {
@@ -746,6 +781,7 @@ fn verify_start(ctx: &mut Context<'_>, user: UserPtr) -> Result<Handled> {
             terminal: Some(VerifyOutcome::NoMatch),
             guidance: Guidance::None,
         };
+        ctx.session.started();
         ctx.session.unseen = true;
         return Ok(Handled {
             ret: 0,
@@ -763,6 +799,7 @@ fn verify_start(ctx: &mut Context<'_>, user: UserPtr) -> Result<Handled> {
         terminal: None,
         guidance: Guidance::Place,
     };
+    ctx.session.started();
     Ok(Handled {
         ret: 0,
         wake: false,
@@ -778,6 +815,9 @@ pub(crate) fn verify_finish(
     outcome: VerifyOutcome,
     token_bytes: [u8; TOKEN_LEN],
 ) -> bool {
+    if !session.claimed_current() {
+        return false;
+    }
     let Op::Verify { nonce, terminal, .. } = &mut session.op else {
         return false;
     };
@@ -797,7 +837,9 @@ pub(crate) fn verify_finish(
 }
 
 pub(crate) fn verify_is_live(session: &Session) -> bool {
-    matches!(&session.op, Op::Verify { terminal: None, .. }) && session.open
+    matches!(&session.op, Op::Verify { terminal: None, .. })
+        && session.open
+        && session.claimed_current()
 }
 
 pub(crate) fn capture_is_live(session: &Session) -> bool {
