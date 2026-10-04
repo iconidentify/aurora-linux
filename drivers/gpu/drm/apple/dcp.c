@@ -83,6 +83,8 @@ struct apple_dcp_typec_port {
 	struct apple_connector *secondary_connector;
 	/* tiled_split: the pipeline whose DPTX port 1 carries dpin1 */
 	struct apple_dcp *split_dcp;
+	/* how long dpin1 waits for dpin0's tile hint before routing normally */
+	unsigned long tile_hint_deadline;
 	/* last mux state acted on, to collapse the per-candidate notifications */
 	struct typec_altmode *applied_alt;
 	unsigned long applied_mode;
@@ -1303,6 +1305,19 @@ static int dcp_tb_split_locked(struct apple_dcp_typec_port *port, bool active,
 	dcp = route->dcp;
 	if (!dcp->dptxport[1].enabled)
 		return -EOPNOTSUPP;
+	/*
+	 * Only the second half of a tiled display goes here; two separate
+	 * monitors behind a dock keep their own pipelines. DCP reports the
+	 * topology for dpin0 shortly after its link comes up: wait for that,
+	 * but not for ever, as a sink may never send one.
+	 */
+	if (!READ_ONCE(dcp->dptxport[0].tile_hint)) {
+		if (time_before(jiffies, port->tile_hint_deadline))
+			return -ENODEV;
+		return -EOPNOTSUPP;
+	}
+	if (dcp->dptxport[0].tiles_h * dcp->dptxport[0].tiles_v < 2)
+		return -EOPNOTSUPP;
 	xbar = &route->xbar->chip->mux[2];
 	state = route->mux_index | 1;
 
@@ -1471,6 +1486,8 @@ int apple_dcp_tb_dp_tunnel(struct device_node *connector_np, unsigned int dpin,
 		goto err_reorder;
 	}
 	*slot = best;
+	if (dpin == 0)
+		port->tile_hint_deadline = jiffies + msecs_to_jiffies(2000);
 	/* the port is in USB4 mode, not DP-alt */
 	port->dp_wanted = false;
 	dcp_tunnel_prepare(best, ctl);
@@ -2174,6 +2191,7 @@ static int dcp_dptx_connect(struct apple_dcp *dcp, u32 port)
 		goto out_unlock;
 
 	reinit_completion(&dcp->dptxport[port].linkcfg_completion);
+	WRITE_ONCE(dcp->dptxport[port].tile_hint, false);
 	dcp->dptxport[port].atcphy = dcp->phy;
 	/* a tiled display's second half comes in on the port's dpin1 */
 	dfp_port = port && dcp->split.active ? 2 : dcp->dptx_dfp_port;
@@ -2394,6 +2412,7 @@ static int dcp_dptx_disconnect(struct apple_dcp *dcp, u32 port)
 		dptxport_release_display(dcp->dptxport[port].service);
 		dcp->dptxport[port].connected = false;
 	}
+	WRITE_ONCE(dcp->dptxport[port].tile_hint, false);
 	mutex_unlock(&dcp->hpd_mutex);
 
 	return 0;
