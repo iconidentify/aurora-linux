@@ -2508,6 +2508,9 @@ static void tb_handle_hotplug(struct work_struct *work)
 		goto put_sw;
 	}
 	port = &sw->ports[ev->port];
+	if (tb_port_is_dpout(port))
+		tb_port_dbg(port, "HPD DEBUG DP OUT hotplug: unplug=%u\n",
+			    ev->unplug);
 	if (tb_is_upstream_port(port)) {
 		tb_dbg(tb, "hotplug event for upstream port %llx:%x (unplug: %d)\n",
 		       ev->route, ev->port, ev->unplug);

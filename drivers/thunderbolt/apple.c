@@ -205,6 +205,10 @@ struct apple_cio {
 		struct apple_cio *acio;
 		struct work_struct work;
 		struct delayed_work retry;	/* re-queues work while waiting */
+		struct delayed_work hpd_debug;
+		u32 hpd_debug_status;
+		u32 hpd_debug_irq;
+		bool hpd_debug_valid;
 		struct mutex lock;	/* protects regs, alive, waiting, paused */
 		void __iomem *regs;	/* mapped while a DP tunnel uses this adapter */
 		unsigned int idx;
@@ -385,6 +389,33 @@ static int apple_dpin_dcp_set_active(void *data, bool active)
 /* Explicit external firmware startup can follow userspace initialization. */
 #define APPLE_DP_FIRMWARE_TRIES		240
 
+/* DEBUG ONLY: observe HPD without acknowledging or changing either register. */
+static void apple_dpin_hpd_debug(struct work_struct *work)
+{
+	struct apple_dpin_ctx *c = container_of(to_delayed_work(work),
+						struct apple_dpin_ctx, hpd_debug);
+	u32 status, irq;
+
+	guard(mutex)(&c->lock);
+	if (!c->alive || !READ_ONCE(c->handed) || !c->regs || c->paused)
+		return;
+	status = readl(c->regs + APPLE_DPIN_STATUS);
+	irq = readl(c->regs + APPLE_DPIN_IRQ_STATUS);
+	if (!c->hpd_debug_valid || status != c->hpd_debug_status ||
+	    irq != c->hpd_debug_irq) {
+		dev_info(c->acio->dev,
+			 "HPD DEBUG dpin%u: status=%08x irq=%08x hpd=%u dead=%u\n",
+			 c->idx, status, irq,
+			 !!(status & APPLE_DPIN_STATUS_HPD),
+			 status == ~0U || irq == ~0U);
+		c->hpd_debug_status = status;
+		c->hpd_debug_irq = irq;
+		c->hpd_debug_valid = true;
+	}
+	mod_delayed_work(c->acio->dp_wq, &c->hpd_debug,
+			 msecs_to_jiffies(250));
+}
+
 static int apple_dpin_connect(struct apple_dpin_ctx *c, bool active)
 {
 	struct apple_cio *acio = c->acio;
@@ -474,8 +505,11 @@ static int apple_dpin_up(struct apple_dpin_ctx *c)
 	}
 
 	ret = apple_dpin_connect(c, true);
-	if (!ret)
-		c->handed = true;
+	if (!ret) {
+		WRITE_ONCE(c->handed, true);
+		if (apple_cio_dp_is_t8103_style())
+			mod_delayed_work(acio->dp_wq, &c->hpd_debug, 0);
+	}
 	return ret;
 }
 
@@ -484,12 +518,15 @@ static void apple_dpin_down(struct apple_dpin_ctx *c)
 	void __iomem *regs;
 	int ret;
 
+	/* Same ordered queue: a debug sample cannot be running alongside us. */
+	cancel_delayed_work(&c->hpd_debug);
+	c->hpd_debug_valid = false;
 	if (c->handed) {
 		ret = apple_dpin_connect(c, false);
 		if (ret)
 			dev_warn(c->acio->dev, "dpin%u: display teardown failed: %d\n",
 				 c->idx, ret);
-		c->handed = false;
+		WRITE_ONCE(c->handed, false);
 	}
 	/* the adapter was put to sleep before the tunnel went away */
 	scoped_guard(mutex, &c->lock) {
@@ -614,8 +651,10 @@ static void apple_cio_destroy_wq(void *data)
 	struct apple_cio *acio = data;
 
 	/* a pending retry would queue onto the destroyed queue */
-	for (unsigned int i = 0; i < ARRAY_SIZE(acio->dpin); i++)
+	for (unsigned int i = 0; i < ARRAY_SIZE(acio->dpin); i++) {
 		cancel_delayed_work_sync(&acio->dpin[i].retry);
+		cancel_delayed_work_sync(&acio->dpin[i].hpd_debug);
+	}
 	destroy_workqueue(acio->dp_wq);
 }
 
@@ -1924,6 +1963,7 @@ static void apple_dpin_pause_retries(struct apple_cio *acio)
 		scoped_guard(mutex, &c->lock)
 			c->paused = true;
 		cancel_delayed_work_sync(&c->retry);
+		cancel_delayed_work_sync(&c->hpd_debug);
 		flush_work(&c->work);
 	}
 }
@@ -1937,6 +1977,10 @@ static void apple_dpin_resume_retries(struct apple_cio *acio)
 
 		guard(mutex)(&c->lock);
 		c->paused = false;
+		if (c->alive && READ_ONCE(c->handed)) {
+			c->hpd_debug_valid = false;
+			mod_delayed_work(acio->dp_wq, &c->hpd_debug, 0);
+		}
 		if (c->alive && c->waiting)
 			mod_delayed_work(acio->dp_wq, &c->retry,
 					 msecs_to_jiffies(APPLE_DPIN_RETRY_MS));
@@ -2597,6 +2641,8 @@ static int apple_cio_probe(struct platform_device *pdev)
 			acio->dpin[i].idx = i;
 			INIT_WORK(&acio->dpin[i].work, apple_dpin_work_fn);
 			INIT_DELAYED_WORK(&acio->dpin[i].retry, apple_dpin_retry_fn);
+			INIT_DELAYED_WORK(&acio->dpin[i].hpd_debug,
+					  apple_dpin_hpd_debug);
 			ret = devm_mutex_init(dev, &acio->dpin[i].lock);
 			if (ret)
 				return ret;
