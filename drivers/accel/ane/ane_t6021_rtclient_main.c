@@ -135,7 +135,7 @@ MODULE_PARM_DESC(legacy_query,
 static unsigned int hello_wait_ms;
 module_param(hello_wait_ms, uint, 0444);
 MODULE_PARM_DESC(hello_wait_ms,
-		 "RTKit HELLO wait in legacy mode; 0 (default) skips RTKit and leaves the mailbox stopped. A firmware that speaks RTKit needs 1000.");
+		 "mailbox management HELLO wait in legacy mode; 0 (default) skips mailbox management and leaves the mailbox stopped. A firmware that speaks mailbox management needs 1000.");
 
 /*
  * Producer-side stats (ane_stats sysfs, ane_timeline debugfs), read
@@ -390,12 +390,12 @@ static void ane_rtclient_validate_chman(struct ane_rtclient *ane)
 
 	if (!a || !a->boot_ipc) {
 		dev_info(ane->dev,
-			 "chman: no host IPC surface — table not validated\n");
+			 "channel table: no host IPC surface — table not validated\n");
 		return;
 	}
 	if (a->boot_ipc_size < ANE_T6021_CHMAN_TOTAL) {
 		dev_warn(ane->dev,
-			 "chman: IPC surface %#llx bytes < fw layout %#x — table not validated\n",
+			 "channel table: IPC surface %#llx bytes < fw layout %#x — table not validated\n",
 			 a->boot_ipc_size, ANE_T6021_CHMAN_TOTAL);
 		return;
 	}
@@ -408,7 +408,7 @@ static void ane_rtclient_validate_chman(struct ane_rtclient *ane)
 		const struct ane_t6021_chman_static *s = &ane_t6021_chman_layout[i];
 
 		dev_dbg(ane->dev,
-			"chman[%u]: name=\"%.*s\" type=%u bit=%u size=%#llx %s (static: %s/%u/%u/%#llx/ipc+%#x)\n",
+			"channel table[%u]: name=\"%.*s\" type=%u bit=%u size=%#llx %s (static: %s/%u/%u/%#llx/ipc+%#x)\n",
 			i, ANE_T6021_CHMAN_NAME_LEN, d->name, d->type, d->bit,
 			d->size,
 			(bad & BIT(i)) ? "MISMATCH" : "OK",
@@ -416,7 +416,7 @@ static void ane_rtclient_validate_chman(struct ane_rtclient *ane)
 	}
 
 	ane->chman_ok = !bad;
-	dev_info(ane->dev, "chman: table %s (mismatch mask %#x)\n",
+	dev_info(ane->dev, "channel table: %s (mismatch mask %#x)\n",
 		 bad ? "NOT VALIDATED" : "VALIDATED", bad);
 }
 
@@ -535,7 +535,7 @@ static int ane_rtclient_legacy_exchange(struct ane_rtclient *ane,
 		 */
 		udelay(50);
 	}
-	dev_info(ane->dev, "LEGACY timeout ch=%u io=%016llx\n",
+	dev_info(ane->dev, "MBI timeout ch=%u io=%016llx\n",
 		 channel, READ_ONCE(io[0]));
 out:
 	ane->legacy_malloc_cursor = cursor;
@@ -1697,7 +1697,7 @@ static void ane_rtclient_recv(void *cookie, u8 ep, u64 message)
 	struct ane_rtclient *ane = cookie;
 
 	dev_dbg(ane->dev,
-		"rtkit app msg: ep=%#x msg=%016llx\n", ep, message);
+		"mailbox management app msg: ep=%#x msg=%016llx\n", ep, message);
 }
 
 static void ane_rtclient_crashed(void *cookie, const void *crashlog,
@@ -1705,7 +1705,7 @@ static void ane_rtclient_crashed(void *cookie, const void *crashlog,
 {
 	struct ane_rtclient *ane = cookie;
 
-	dev_err(ane->dev, "rtkit: coprocessor crashed (crashlog %zu bytes)\n",
+	dev_err(ane->dev, "mailbox management: coprocessor crashed (crashlog %zu bytes)\n",
 		size);
 	print_hex_dump(KERN_ERR, "ANE crashlog: ", DUMP_PREFIX_OFFSET, 16, 1,
 		       crashlog, min_t(size_t, size, 256), false);
@@ -1718,7 +1718,7 @@ static int ane_rtclient_shmem_setup(void *cookie,
 
 	if (bfr->iova) {
 		dev_warn(ane->dev,
-			 "rtkit: fw-provided shmem iova=%pad size=%#zx — refused\n",
+			 "mailbox management: fw-provided shmem iova=%pad size=%#zx — refused\n",
 			 &bfr->iova, bfr->size);
 		return -EINVAL;
 	}
@@ -1729,7 +1729,7 @@ static int ane_rtclient_shmem_setup(void *cookie,
 	if (ane->fw && !ane_t6021_fw_alias_iova_ok(ane->fw, bfr->iova,
 						   bfr->size)) {
 		dev_err(ane->dev,
-			"rtkit: shmem grant %pad+%#zx overlaps the fw alias — refusing\n",
+			"mailbox management: shmem grant %pad+%#zx overlaps the fw alias — refusing\n",
 			&bfr->iova, bfr->size);
 		dma_free_coherent(ane->dev, bfr->size, bfr->buffer, bfr->iova);
 		bfr->buffer = NULL;
@@ -1747,7 +1747,7 @@ static void ane_rtclient_shmem_destroy(void *cookie,
 		return;
 	if (ane->held) {
 		dev_warn(ane->dev,
-			 "rtkit: shmem %pad HELD (CPU started) — not freed\n",
+			 "mailbox management: shmem %pad HELD (CPU started) — not freed\n",
 			 &bfr->iova);
 		return;
 	}
@@ -1794,7 +1794,7 @@ static void ane_rtclient_start_app_eps(struct ane_rtclient *ane)
 		if (!apple_rtkit_has_endpoint(ane->rtk, ep))
 			continue;
 		ret = apple_rtkit_start_ep(ane->rtk, ep);
-		dev_dbg(ane->dev, "rtkit: STARTEP app ep %#x -> %pe\n",
+		dev_dbg(ane->dev, "mailbox management: STARTEP app ep %#x -> %pe\n",
 			ep, ERR_PTR(ret));
 	}
 }
@@ -2090,7 +2090,7 @@ static int ane_rtclient_probe(struct platform_device *pdev)
 			 cpu_status);
 		if (!a->fw_alive && !fw_start_rtb_mode) {
 			dev_err(dev,
-				"fw_start: poll A timeout, no READY — HELD until reboot, RTKit handshake skipped\n");
+				"fw_start: poll A timeout, no READY — HELD until reboot, mailbox management handshake skipped\n");
 			return 0;
 		}
 	}
@@ -2108,7 +2108,7 @@ static int ane_rtclient_probe(struct platform_device *pdev)
 
 			dma_wmb();
 			dev_dbg(dev,
-				"LEGACY P8 host ack: SCRATCH3 <- %08x\n",
+				"MBI P8 host ack: SCRATCH3 <- %08x\n",
 				ANE_T6021_BOOT_ACK);
 			/*
 			 * For a nonzero HELLO wait, initialize management and
@@ -2120,7 +2120,7 @@ static int ane_rtclient_probe(struct platform_device *pdev)
 								&ane_rtclient_rtkit_ops);
 				if (IS_ERR(ane->rtk)) {
 					dev_err(dev,
-						"LEGACY hello: rtkit init %pe\n",
+						"MBI hello: mailbox management init %pe\n",
 						ane->rtk);
 					ane->rtk = NULL;
 				} else {
@@ -2134,14 +2134,14 @@ static int ane_rtclient_probe(struct platform_device *pdev)
 				unsigned long hello_deadline =
 					jiffies + msecs_to_jiffies(hello_wait_ms);
 
-				dev_dbg(dev, "LEGACY hello: boot begin (%u ms)\n",
+				dev_dbg(dev, "MBI hello: boot begin (%u ms)\n",
 					hello_wait_ms);
 				do {
 					hello_ret = apple_rtkit_boot(ane->rtk);
 				} while (hello_ret == -ETIME &&
 					 time_before(jiffies, hello_deadline));
 				dev_info(dev,
-					 "LEGACY hello: boot %pe running=%d crashed=%d\n",
+					 "MBI hello: boot %pe running=%d crashed=%d\n",
 					 ERR_PTR(hello_ret),
 					 apple_rtkit_is_running(ane->rtk),
 					 apple_rtkit_is_crashed(ane->rtk));
@@ -2155,7 +2155,7 @@ static int ane_rtclient_probe(struct platform_device *pdev)
 			}
 		} else {
 			dev_warn(dev,
-				 "LEGACY ack withheld (booted=%u scratch3_ack=%u chman_ok=%u)\n",
+				 "MBI ack withheld (booted=%u scratch3_ack=%u channel_table_valid=%u)\n",
 				 ane->fw ? ane->fw->booted : 0,
 				 scratch3_ack, ane->chman_ok);
 		}
@@ -2189,7 +2189,7 @@ static int ane_rtclient_probe(struct platform_device *pdev)
 								     16, 0x03,
 								     1, 3000);
 				dev_dbg(dev,
-					"LEGACY CONFIG_GET words %08x %08x result=%d (DMA remains held)\n",
+					"MBI CONFIG_GET words %08x %08x result=%d (DMA remains held)\n",
 					READ_ONCE(((u32 *)command->cpu)[1]),
 					READ_ONCE(((u32 *)command->cpu)[2]),
 					qret);
@@ -2197,7 +2197,7 @@ static int ane_rtclient_probe(struct platform_device *pdev)
 					cfg_err = qret;
 				} else if (!READ_ONCE(((u32 *)command->cpu)[2])) {
 					dev_err(dev,
-						"LEGACY CONFIG_GET reply word +0x08 zero\n");
+						"MBI CONFIG_GET reply word +0x08 zero\n");
 					cfg_err = -EPROTO;
 				}
 			} else {
@@ -2224,7 +2224,7 @@ static int ane_rtclient_probe(struct platform_device *pdev)
 		if (IS_ERR(ane->rtk)) {
 			ret = PTR_ERR(ane->rtk);
 			ane->rtk = NULL;
-			dev_err_probe(dev, ret, "apple_rtkit_init failed\n");
+			dev_err_probe(dev, ret, "mailbox management initialization failed\n");
 			goto err_pm_or_hold;
 		}
 		/*
@@ -2237,7 +2237,7 @@ static int ane_rtclient_probe(struct platform_device *pdev)
 			boot_ret = apple_rtkit_boot(ane->rtk);
 		} while (boot_ret == -ETIME && time_before(jiffies, deadline));
 		if (boot_ret) {
-			dev_err(dev, "rtkit boot handshake failed: %pe\n",
+			dev_err(dev, "mailbox management boot handshake failed: %pe\n",
 				ERR_PTR(boot_ret));
 			cancel_delayed_work_sync(&ane->poll_work);
 			ret = boot_ret;
@@ -2250,7 +2250,7 @@ static int ane_rtclient_probe(struct platform_device *pdev)
 
 	if (!ane->chman_ok) {
 		dev_err(dev,
-			"install: ChMan table not validated — refusing to register DRM device (ioctls would stall the ring)\n");
+			"install: channel table not validated — refusing to register DRM device (ioctls would stall the ring)\n");
 		cancel_delayed_work_sync(&ane->poll_work);
 		if (!ane->held) {
 			pm_runtime_put_sync_suspend(dev);
@@ -2306,7 +2306,7 @@ static int ane_rtclient_probe(struct platform_device *pdev)
 			goto err_pm_or_hold;
 		}
 		dev_info(dev,
-			 "loaded ane_t6021 (DRM major %d minor %d; ABI 2; legacy_only=%u chman_ok=%u booted=%u; state %s; BO cap %u MiB)\n",
+			 "loaded ane_t6021 (DRM major %d minor %d; ABI 2; legacy_only=%u channel_table_valid=%u booted=%u; state %s; BO cap %u MiB)\n",
 			 DRM_ANE_ABI_V2, 0,
 			 legacy_only, ane->chman_ok,
 			 ane->fw ? ane->fw->booted : 0,

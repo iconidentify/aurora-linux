@@ -330,7 +330,7 @@ int ane_t6021_boot_start(struct ane_t6021 *ane, int stop_after, int table_mode, 
 			 "boot: run returned 0 (booted=%u fw_alive=%u) — %s; scratch_result=%016llx (raw device address; transport stays fenced until response validation)\n",
 			 bo, fa,
 			 bo ? "DONE observed — handshake complete" :
-			 "rc 0 WITHOUT DONE (rtb_mode: HELLO-gated; DONE not part of this mode)",
+			 "rc 0 WITHOUT DONE (mailbox mode: HELLO-gated; DONE not part of this mode)",
 			 sres);
 	return r;
 }
