@@ -52,7 +52,7 @@ static inline bool ane_t6021_rvbar_latched(u64 rd)
 	return rd & 1;
 }
 
-/* Entry bits of an RVBAR read (what the fold would have named). */
+/* RVBAR entry address bits. */
 static inline u64 ane_t6021_rvbar_entry_bits(u64 rd)
 {
 	return rd & ANE_T6021_RVBAR_ADDR_MASK;
