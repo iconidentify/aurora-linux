@@ -321,13 +321,13 @@ int ane_t6021_boot_start(struct ane_t6021 *ane, int stop_after, int table_mode, 
 		return r;	/* unreachable: the caller gated */
 	if (r && cs) {
 		dev_err(ane->dev,
-			"boot: sequence error %d AFTER CPU start (cpu_started=%u fw_alive=%u booted=%u scratch_result=%016llx) — WEDGED-PIN HOLD: all surfaces/rings/IRQ/links preserved; reboot is the only reclamation; no retry. HANDSHAKE state only: the result word has NO sourced success semantics\n",
+			"boot: sequence error %d AFTER CPU start (cpu_started=%u fw_alive=%u booted=%u scratch_result=%016llx) — WEDGED-PIN HOLD: all surfaces/rings/IRQ/links preserved; reboot is the only reclamation; no retry. HANDSHAKE state only: result address requires validation\n",
 			r, cs, fa, bo, sres);
 		return 0;	/* bind fenced, state held */
 	}
 	if (!r)
 		dev_info(ane->dev,
-			 "boot: run returned 0 (booted=%u fw_alive=%u) — %s; scratch_result=%016llx (raw device address, semantics UNSOURCED — not a success claim; transport stays fenced until response validation)\n",
+			 "boot: run returned 0 (booted=%u fw_alive=%u) — %s; scratch_result=%016llx (raw device address; transport stays fenced until response validation)\n",
 			 bo, fa,
 			 bo ? "DONE observed — handshake complete" :
 			 "rc 0 WITHOUT DONE (rtb_mode: HELLO-gated; DONE not part of this mode)",

@@ -466,8 +466,8 @@ ane_t6021_boot_run(const struct ane_t6021_boot_io *io,
 	io->wr32(io->ctx, ANE_T6021_BOOT_REG_SCRATCH6,
 		 cfg->rtb_mode ? 0 : 1);
 	io->phase(io->ctx, cfg->rtb_mode ?
-		  "P1 S1 SCRATCH6=0 (RTBuddy select)" :
-		  "P1 S1 SCRATCH6=1 (legacy ChMan/MBI select)");
+		  "P1 S1 SCRATCH6=0 (mailbox select)" :
+		  "P1 S1 SCRATCH6=1 (MBI select)");
 	io->wr32(io->ctx, ANE_T6021_BOOT_REG_SCRATCH7, 1);
 	io->wr32(io->ctx, ANE_T6021_BOOT_REG_SCRATCH7, 0);
 	if (cfg->stop_after == 2)
@@ -510,8 +510,8 @@ ane_t6021_boot_run(const struct ane_t6021_boot_io *io,
 		io->phase(io->ctx, "P4 pollA READY observed");
 	} else if (cfg->rtb_mode) {
 		io->phase(io->ctx,
-			  "P4 pollA no READY (RTBuddy: HELLO-gated)");
-		return 0;	/* Diagnostic stop after CPU release and READY polling. */
+			  "P4 pollA no READY (mailbox: HELLO required)");
+		return 0;	/* Mailbox mode requires HELLO to establish aliveness. */
 	} else {
 		return -ETIMEDOUT;
 	}
