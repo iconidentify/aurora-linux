@@ -145,7 +145,7 @@ static inline u64 ane_mbi_msg48_encode(u32 cursor, u32 len)
 #define ANE_MBI_CHAN_STRIDE	0x100
 #define ANE_MBI_CHAN_MAX_DUMP	8
 
-/* RTKit MGMT (EP 0); type bits [59:52], u64 message halves */
+/* Mailbox management (EP 0); type bits [59:52], u64 message halves */
 #define ANE_RTKIT_TYPE			GENMASK_ULL(59, 52)
 #define ANE_RTKIT_MGMT_HELLO		1
 #define ANE_RTKIT_MGMT_HELLO_REPLY	2
@@ -170,7 +170,7 @@ static inline u64 ane_mbi_msg48_encode(u32 cursor, u32 len)
 #define ANE_RTKIT_VER_MIN	11
 #define ANE_RTKIT_VER_MAX	12
 
-/* RTKit system endpoints rtkit.c starts when announced */
+/* Start mailbox system endpoints when announced. */
 #define ANE_RTKIT_EP_CRASHLOG	1
 #define ANE_RTKIT_EP_SYSLOG	2
 #define ANE_RTKIT_EP_DEBUG	3
@@ -355,7 +355,7 @@ static inline bool ane_t6021_fw_alias_iova_ok(const struct ane_t6021 *ane,
 	return iova + size <= lo || iova >= lo + ane->fw_size;
 }
 
-/* ane_t6021_rtkit.c */
+/* Mailbox initialization, shutdown and receive helpers. */
 int ane_t6021_rtkit_init(struct ane_t6021 *ane);
 void ane_t6021_rtkit_shutdown(struct ane_t6021 *ane);
 void ane_t6021_rtkit_drain(struct ane_t6021 *ane);
