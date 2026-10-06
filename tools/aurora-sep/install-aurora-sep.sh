@@ -97,6 +97,9 @@
 # and PMP details and the GPU's core count; and --m3-report.
 # 11.111-test: opt-in Air display handoff, with GPU diagnostics only.
 # The kernel keeps the boot framebuffer until T8122 PMP support is available.
+# 11.111.1-test: the same kernel and handoff; m1n1 aurora8.4 also passes the
+# Air's PMP values and read-only PMP and display clock facts to Linux for
+# --m3-report. A plain run keeps the display-handoff variant.
 # It replaces linux-asahi (or linux-aurora) as a pacman package,
 # so mkinitcpio and update-m1n1 run from their own hooks; on a GRUB Mac this
 # script regenerates grub.cfg and keeps the previous kernel as a fallback entry.
@@ -132,7 +135,7 @@ set -euo pipefail
 # The kernel package version and the release tag move independently: a release
 # that only changes m1n1 reuses the previous kernel packages unchanged.
 VERSION=7.1.12.aurora2-11.111
-TAG=sep-7.1.12.aurora2-11.111-test
+TAG=sep-7.1.12.aurora2-11.111.1-test
 # Packages are fetched from this script's own tag, never from "latest": the
 # checksums below belong to this release and nothing else.
 RELEASE_URL=https://github.com/iconidentify/aurora-linux/releases/download/$TAG
@@ -154,7 +157,7 @@ M3_M1N1_PACKAGE="m1n1-aurora-1.6.1.aurora7-1-aarch64.pkg.tar.zst 547d0d5f9daa283
 # "file sha256". It may name the same package as M3_M1N1_PACKAGE once one m1n1
 # carries both. Left empty, an Air stays kernel-only and --m3-handoff on an
 # Air stops with nothing installed.
-M3_AIR_M1N1_PACKAGE="m1n1-aurora-1.6.1.aurora8.3-1-aarch64.pkg.tar.zst 9a2c30745916016830d65dc0c602ce2b81dacd9382192568dc1975d9afca1767"
+M3_AIR_M1N1_PACKAGE="m1n1-aurora-1.6.1.aurora8.4-1-aarch64.pkg.tar.zst 1a2131cca778707758e9a7a2be4ac4bb28c6d0ab9dd242f380238a5808dfb8ff"
 PINNED="linux-aurora linux-aurora-headers libfprint m1n1-aurora"
 PIN_BEGIN="# >>> aurora-sep pin (remove with: install-aurora-sep.sh --uninstall)"
 PIN_END="# <<< aurora-sep pin"
@@ -1376,7 +1379,8 @@ install_all() {
   if [[ $M3_MODE == handoff ]] && is_m3_air && [[ $M3_AIR_DISPLAY_HANDOFF == 1 ]]; then
     say "Done. Reboot with the serial recorder running and someone watching: expect the Omarchy
     logo, the boot menu, then the same desktop on the boot framebuffer. Check the serial log
-    for the T8122 handoff result. Native display and GPU acceleration are not enabled.
+    for the T8122 handoff result and the \"PMP: T8122:\" lines.
+    Native display and GPU acceleration are not enabled.
     Run this test build with --m3-report and send the report and serial log."
   elif [[ $M3_MODE == handoff ]] && is_m3_air && [[ $M3_AIR_DRY_RUN == 1 ]]; then
     say "Done. Reboot with the serial recorder running and someone watching: expect the Omarchy
@@ -1976,7 +1980,9 @@ fingerprint.
           A successful display handoff prints "DCP: T8122: handoff published".
           Linux keeps the display disabled with "no T8122 PMP description
           is built in". If handoff checks refuse, send the refusal line;
-          fallback to the boot framebuffer is expected.
+          fallback to the boot framebuffer is expected. The serial log also
+          has "PMP: T8122:" lines, and the report carries
+          /chosen/asahi,t8122-pmp, -pmp-facts and -clock-facts.
         - If it stops on text or stays black for more than two minutes,
           restore the saved boot.bin from macOS using the printed steps.
           Apply the printed M1N1_UPDATE_DISABLED line and send the serial log.
