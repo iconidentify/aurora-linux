@@ -21,6 +21,7 @@ use crate::{
     m3_init_storage as storage,
     m3_memory::Buffer,
     m3_params::{self, G15Debug, InitDataParam, ThermalMode},
+    m3_perturb::Perturb,
     m3_soc::{IoMapping, PstateTable, Soc},
 };
 
@@ -186,6 +187,8 @@ pub(crate) struct Contents {
     /// The accepted performance-state table (`Soc::pstates`): states above the off state, and
     /// the frequency of the highest one in MHz.
     pub(crate) table: (u32, u32),
+    /// The sensitivity perturbation of this boot (`asahi.m3_perturb`).
+    pub(crate) perturb: Perturb,
 }
 
 fn read_u32(bytes: &[u8], offset: usize) -> Result<u32> {
@@ -208,9 +211,10 @@ impl Contents {
         let dev = pdev.as_ref();
         let param = m3_params::initdata_param();
         check_version(dev, firmware)?;
-        let iomaps = soc.iomaps.ok_or(ENODEV)?;
+        let perturb = crate::m3_perturb::active(soc);
+        let iomaps = perturb.iomaps(soc).ok_or(ENODEV)?;
         storage::validate_iomaps(iomaps).map_err(|_| EINVAL)?;
-        let images = build_images(dev, firmware, soc, iomaps)?;
+        let images = build_images(dev, firmware, soc, perturb, iomaps)?;
         let hwdata = images.get(HWDATA).and_then(|i| i.as_deref()).ok_or(EINVAL)?;
         let pstates = PstatePolicy::new(dev, hwdata)?;
         let table = match soc.pstates {
@@ -267,7 +271,7 @@ impl Contents {
             pstates.max,
             pstates.max_mhz
         );
-        Ok(Contents { images, pstates, iomaps, table })
+        Ok(Contents { images, pstates, iomaps, table, perturb })
     }
 
     /// Check the contents before they are uploaded.
@@ -425,6 +429,7 @@ fn check_layout() -> Result {
 fn fill_io_mappings(
     dev: &device::Device,
     cfg: &'static hw::HwConfig,
+    perturb: Perturb,
     mappings: &[IoMapping],
     iomaps: &[storage::IoMap],
     hwdata: &mut [u8],
@@ -437,7 +442,7 @@ fn fill_io_mappings(
         let virt = entry + offset_of!(raw::IOMapping, virt_addr);
         // The same register block as the manager's table.
         let same_block = cfg.io_mappings.get(slot).and_then(|m| m.as_ref()).is_some_and(|m| {
-            m.base as u64 & !0x3fff == phys & !0x3fff && m.writable == writable
+            perturb.io_block(slot, m.base as u64) & !0x3fff == phys & !0x3fff && m.writable == writable
         });
         let covered = iomaps.iter().any(|io| {
             io.slot == slot
@@ -564,13 +569,14 @@ fn build_images(
     dev: &device::Device,
     firmware: &Firmware,
     soc: &Soc,
+    perturb: Perturb,
     iomaps: &[storage::IoMap],
 ) -> Result<KVec<Option<KVVec<u8>>>> {
     check_layout().inspect_err(|_| {
         dev_err!(dev, "M3: the constructed InitData records do not match the G15 InitData structures\n")
     })?;
     let cfg: &'static hw::HwConfig = soc.hwcfg.ok_or(ENODEV)?;
-    let io_mappings = soc.io_mappings.ok_or(ENODEV)?;
+    let io_mappings = perturb.io_mappings(soc).ok_or(ENODEV)?;
     let pwr = hw::PwrConfig::load(dev, cfg).inspect_err(|e| {
         dev_err!(dev, "M3: cannot read the GPU power configuration from the device tree ({:?})\n", e)
     })?;
@@ -593,7 +599,7 @@ fn build_images(
         cap: None,
         timestamp_base: Some(crate::agx_memory::TIMESTAMP_RANGE.start),
         reference_ppm: true,
-        runtime_hwdata_b: Some(soc.hwdata_b.ok_or(ENODEV)?),
+        runtime_hwdata_b: Some(perturb.hwdata_b(soc).ok_or(ENODEV)?),
     };
     let c = initdata::InitDataBuilderG15V14_8_3::g15_contents(cfg, &dyncfg, &g15).inspect_err(|e| {
         dev_err!(dev, "M3: cannot build InitData from the device tree ({:?})\n", e)
@@ -639,7 +645,7 @@ fn build_images(
         HWDATA_A + offset_of!(raw::HwDataAG15V14_8_3, init_timestamp),
         &now.to_le_bytes(),
     )?;
-    fill_io_mappings(dev, cfg, io_mappings, iomaps, &mut hwdata)?;
+    fill_io_mappings(dev, cfg, perturb, io_mappings, iomaps, &mut hwdata)?;
     images[HWDATA] = Some(hwdata);
 
     let mut globals = zeroed(GLOBALS)?;

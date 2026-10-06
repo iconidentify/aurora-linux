@@ -87,6 +87,7 @@ pub(crate) struct Registered {
 }
 impl Registered {
     pub(crate) fn start(pdev: &platform::Device<Core>, soc: &'static crate::m3_soc::Soc) -> Result<Self> {
+        crate::m3_perturb::log(pdev.as_ref(), soc);
         let resources = crate::m3_resources::from_device(pdev, soc)?;
         dev_info!(pdev.as_ref(), "M3: resource admission complete\n");
         soc.require_complete(pdev.as_ref())?;

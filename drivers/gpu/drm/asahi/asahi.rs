@@ -50,6 +50,7 @@ mod m3_timeline;
 mod m3_coverage;
 mod m3_drm;
 mod m3_params;
+mod m3_perturb;
 mod m3_adt_config;
 mod m3_thermal;
 mod m3_thermal_policy;

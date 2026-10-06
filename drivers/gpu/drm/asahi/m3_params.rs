@@ -353,6 +353,20 @@ pub(crate) fn timeout_nohang() -> bool {
     M3_TIMEOUT_NOHANG.load(Ordering::Relaxed) != 0
 }
 
+fn parse_perturb(text: &str) -> Option<u64> {
+    parse_u64(text).filter(|value| *value <= crate::m3_perturb::LAST)
+}
+
+/// `asahi.m3_perturb=N`: one sensitivity perturbation of the T6030 runtime per boot
+/// (`m3_perturb`). 0 (default) changes nothing; values above the last one are rejected.
+static M3_PERTURB: AtomicU64 = AtomicU64::new(0);
+m3_param!("m3_perturb", M3_PERTURB, parse_perturb);
+
+/// `asahi.m3_perturb`.
+pub(crate) fn perturb_param() -> u64 {
+    M3_PERTURB.load(Ordering::Relaxed)
+}
+
 /// `asahi.m3_unlocked_wait`: 1 (default) releases the runtime lock while the runtime backend
 /// waits for a batch to complete, so VM creation, timestamp mapping and the event worker are
 /// not held up by a running job. 0 holds the lock from preparation to retirement, as before.

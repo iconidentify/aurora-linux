@@ -93,7 +93,13 @@ impl Device {
             return Err(ENODEV);
         }
         let (setup_offset, setup_value) = soc.sgx_setup.ok_or(ENODEV)?;
-        registers.try_write32(setup_value, setup_offset)?;
+        if crate::m3_perturb::active(soc).skip_sgx_setup() {
+            let current = registers.try_read32(setup_offset)?;
+            dev_warn!(pdev.as_ref(), "M3 perturb: SGX setup write skipped; SGX+{:#x} reads {:#x} (the write would set {:#x})\n",
+                setup_offset, current, setup_value);
+        } else {
+            registers.try_write32(setup_value, setup_offset)?;
+        }
         device.core_mask = core_mask;
         Ok(device)
     }

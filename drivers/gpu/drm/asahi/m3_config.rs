@@ -6,7 +6,7 @@ use crate::m3_init_storage as storage;
 use storage::{REGION_A,RUNTIME_POINTERS,HARDWARE_DATA,UNKNOWN_PAIR,UNKNOWN_SMALL,
     UNKNOWN_C0,UNKNOWN_C1,UNKNOWN_C3,GLOBALS,GLOBALS_POWER,CONTROL_REGION,RUNTIME_FLAGS,
     FW_CONTROL_STATE,FW_CONTROL_RING};
-use crate::{driver,agx_memory::{self},m3_memory::Buffer,mmu,pgtable::prot};
+use crate::{driver,agx_memory::{self},m3_memory::Buffer,mmu};
 
 /// The root, runtime-pointer and firmware-control records, encoded for the owners
 /// `region` describes. Config uploads them for its own allocations; the device-tree
@@ -97,7 +97,7 @@ impl Config {
             b.write(0,image)?;objects.push(b,GFP_KERNEL)?;
         }
         for io in contents.iomaps {
-            let map=uat.kernel_vm().map_io(io.address,io.physical.try_into()?,io.size,prot::PROT_FW_MMIO_RW)?;
+            let map=uat.kernel_vm().map_io(io.address,io.physical.try_into()?,io.size,contents.perturb.mmio_prot(io.slot))?;
             let owned=init::Region::new(map.iova(),io.size).map_err(|_|EINVAL)?;
             let field=io.pointer_field().map_err(|_|EINVAL)?;
             objects[HARDWARE_DATA].u64(field,io.pointer(owned).map_err(|_|EINVAL)?)?;
