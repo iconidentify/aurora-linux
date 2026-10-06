@@ -9,17 +9,22 @@ chosen.* lines. pacman -U and the m1n1/kernel installs run it, as the hooks do.
 from pathlib import Path
 import hashlib
 import os
+import re
 import shutil
 import subprocess
 import tempfile
 import unittest
 
 INSTALLER = Path(__file__).resolve().parent.parent / "install-aurora-sep.sh"
+# The installer's VERSION names the boot.bin copy it keeps on the EFI partition.
+VERSION = re.search(r"^VERSION=(\S+)$", INSTALLER.read_text(), re.M).group(1)
 
 BOARDS = {
     "j516s": ["apple,j516s", "apple,t6030", "apple,arm-platform"],
     "j514s": ["apple,j514s", "apple,t6030", "apple,arm-platform"],
     "j613": ["apple,j613", "apple,t8122", "apple,arm-platform"],
+    "j615": ["apple,j615", "apple,t8122", "apple,arm-platform"],
+    "j504": ["apple,j504", "apple,t8122", "apple,arm-platform"],
     "j314s": ["apple,j314s", "apple,t6000", "apple,arm-platform"],
 }
 SWITCHES = b"chosen.asahi,t6030-gpu=1\nchosen.asahi,t6030-dcp=1\nchosen.asahi,t6030-dcpext=1\n"
@@ -119,7 +124,9 @@ cp "$FAKE_PKGS/$(basename "$url")" "$out"
 """
 
 
-class M3FlowTest(unittest.TestCase):
+class M3FlowBase(unittest.TestCase):
+    """The fake Mac and its helpers, without tests (test_m3_air.py uses it too)."""
+
     def setUp(self):
         if not shutil.which("bsdtar") or not shutil.which("zstd"):
             self.skipTest("bsdtar and zstd are needed to build the fixture m1n1 packages")
@@ -215,8 +222,10 @@ boot_chain() {{ echo limine; }}
         return [l.rsplit("/", 1)[1] for l in self.log().splitlines() if l.startswith("curl ")]
 
     def kept_copy(self):
-        return self.tmp / "esp/m1n1/boot.bin.before-7.1.12.aurora2-11.36"
+        return self.tmp / f"esp/m1n1/boot.bin.before-{VERSION}"
 
+
+class M3FlowTest(M3FlowBase):
     # M3 Pro on the handoff path
 
     def test_fresh_m3_pro_gets_the_handoff(self):
@@ -230,7 +239,7 @@ boot_chain() {{ echo limine; }}
         self.assertIn(AURORA6, self.downloaded())
         self.assertNotIn(AURORA3, self.downloaded())
         self.assertEqual(self.kept_copy().read_bytes(), b"M1N1:original\n")
-        self.assertEqual((self.state / "m3-mode").read_text().strip(), "handoff")
+        self.assertEqual((self.state / "m3-mode").read_text().strip(), "handoff t6030")
         self.assertFalse(self.update_conf.read_text().count("M1N1_UPDATE_DISABLED"))
 
         self.uninstall()
@@ -308,7 +317,8 @@ boot_chain() {{ echo limine; }}
         self.assert_kernel_only("j516s", stub="15.6")
 
     def test_trial_refused_on_an_m3(self):
-        self.mac("j613")
+        # A plain M3 that isn't an Air (the Air's opt-in is in test_m3_air.py).
+        self.mac("j504")
         before = self.boot.read_bytes()
         proc = self.install(try_=1, check=False)
         self.assertNotEqual(proc.returncode, 0)
@@ -323,7 +333,7 @@ boot_chain() {{ echo limine; }}
         self.install(try_=1)
         out = self.install().stdout
         self.assertIn("keeping it", out)
-        self.assertEqual((self.state / "m3-mode").read_text().strip(), "handoff")
+        self.assertEqual((self.state / "m3-mode").read_text().strip(), "handoff t6030")
         self.assertTrue(self.boot.read_bytes().endswith(SWITCHES))
         self.assertNotIn("M1N1_UPDATE_DISABLED", self.update_conf.read_text())
         self.uninstall()
