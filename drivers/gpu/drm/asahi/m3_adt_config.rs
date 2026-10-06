@@ -634,6 +634,20 @@ fn build_images(
     // HwData: HwDataB, then HwDataA.
     let mut hwdata = zeroed(HWDATA)?;
     write(&mut hwdata, 0, initdata::raw_bytes(&*c.hwdata_b))?;
+    let words = perturb.hwdata_b_words();
+    for &(offset, value) in words {
+        write(&mut hwdata, offset, &value.to_le_bytes())?;
+    }
+    if !words.is_empty() {
+        dev_warn!(
+            dev,
+            "M3 perturb: HwDataB +{:#x}={:#x} +{:#x}={:#x} in the uploaded image\n",
+            words[0].0,
+            read_u32(&hwdata, words[0].0)?,
+            words[words.len() - 1].0,
+            read_u32(&hwdata, words[words.len() - 1].0)?
+        );
+    }
     write(&mut hwdata, HWDATA_A, initdata::raw_bytes(&*c.hwdata_a))?;
     // The system counter value at InitData creation, the base of the firmware's first power and
     // energy interval.

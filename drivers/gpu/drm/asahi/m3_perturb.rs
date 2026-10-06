@@ -9,14 +9,18 @@
 //!
 //! The perturbations only shrink or remove firmware IO mappings, make one read-only, move one
 //! read-only mapping inside the GPU's own register window, clear bits of the HwDataB unit masks,
-//! or skip the SGX setup write. None of them touches a voltage, a performance-state table, a
-//! power or thermal limit, or the power-management words of the InitData.
+//! skip the SGX setup write, or return the HwDataB words at +0xa38/+0xa40 to 0, their default
+//! before they were set to 1 on G15. None of them touches a voltage, a performance-state table,
+//! or a power or thermal limit.
 //!
 //! They apply on T6030 only. On any other SoC the parameter is logged and ignored.
+
+use core::mem::offset_of;
 
 use kernel::{device, prelude::*};
 
 use crate::{
+    fw::initdata::raw,
     initdata::G15RuntimeHwDataB,
     m3_adt_config::T6030_IO_MAPPINGS,
     m3_init_storage::{IoMap, T6030_IOMAPS},
@@ -38,7 +42,14 @@ const FENDER_WINDOW: u32 = 0x10_4000;
 /// 16 KiB block inside the same SGX window.
 const CLOCK_GEN_MOVED: u64 = 0x2_90e1_c000;
 
+/// HwDataB +0xa38 and +0xa40 (`unk_460`, `unk_468`), both 1 in the generated HwDataB.
+const HWDATA_B_A38: usize = offset_of!(raw::HwDataBG15V14_8_3, unk_460);
+const HWDATA_B_A40: usize = offset_of!(raw::HwDataBG15V14_8_3, unk_468);
+/// The HwDataB words `hwdata-b-a38-a40-zero` writes: (offset, value).
+static HWDATA_B_A38_A40_ZERO: [(usize, u32); 2] = [(HWDATA_B_A38, 0), (HWDATA_B_A40, 0)];
+
 const _: () = {
+    assert!(HWDATA_B_A38 == 0xa38 && HWDATA_B_A40 == 0xa40);
     assert!(T6030_IO_MAPPINGS.len() == CLOCK_GEN_INDEX + 1);
     assert!(T6030_IOMAPS.len() == CLOCK_GEN_INDEX + 1);
     assert!(T6030_IO_MAPPINGS[CLOCK_GEN_INDEX].0 == CLOCK_GEN_SLOT);
@@ -111,10 +122,12 @@ pub(crate) enum Perturb {
     UnitMaskB = 6,
     /// Map SGX+0xe1c000 as the clock-generator block (slot 29), read-only.
     ClockGenMoved = 7,
+    /// HwDataB +0xa38 and +0xa40 1 -> 0.
+    HwDataBA38A40Zero = 8,
 }
 
 /// The highest `asahi.m3_perturb` value.
-pub(crate) const LAST: u64 = Perturb::ClockGenMoved as u64;
+pub(crate) const LAST: u64 = Perturb::HwDataBA38A40Zero as u64;
 
 impl Perturb {
     fn from_param(value: u64) -> Self {
@@ -126,6 +139,7 @@ impl Perturb {
             5 => Self::UnitMaskA,
             6 => Self::UnitMaskB,
             7 => Self::ClockGenMoved,
+            8 => Self::HwDataBA38A40Zero,
             _ => Self::None,
         }
     }
@@ -140,6 +154,7 @@ impl Perturb {
             Self::UnitMaskA => "unit-mask-a",
             Self::UnitMaskB => "unit-mask-b",
             Self::ClockGenMoved => "clkgen-moved",
+            Self::HwDataBA38A40Zero => "hwdata-b-a38-a40-zero",
         }
     }
 
@@ -157,6 +172,7 @@ impl Perturb {
             Self::ClockGenMoved => {
                 "IO mapping slot 29 (GFX clock generator) SGX+0xe5c000 -> SGX+0xe1c000, read-only"
             }
+            Self::HwDataBA38A40Zero => "HwDataB +0xa38 and +0xa40 1 -> 0",
         }
     }
 
@@ -205,6 +221,14 @@ impl Perturb {
             Self::UnitMaskA => Some(&UNIT_MASK_A_HWDATA_B),
             Self::UnitMaskB => Some(&UNIT_MASK_B_HWDATA_B),
             _ => soc.hwdata_b,
+        }
+    }
+
+    /// HwDataB words to write over the generated HwDataB: (offset into HwDataB, value).
+    pub(crate) fn hwdata_b_words(self) -> &'static [(usize, u32)] {
+        match self {
+            Self::HwDataBA38A40Zero => &HWDATA_B_A38_A40_ZERO,
+            _ => &[],
         }
     }
 
