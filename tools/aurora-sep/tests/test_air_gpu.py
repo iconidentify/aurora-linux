@@ -775,6 +775,19 @@ except ImportError:  # pragma: no cover
 
 SRC = (HERE.parent / "install-aurora-sep.sh").read_text()
 SCRIPTS = re.findall(r'^  "(air-gpu-[a-z]+\.sh) ([0-9a-f]{64})"$', SRC, re.M)
+MESA_ENTRY = re.search(r'^M3_GPU_MESA_PACKAGE="([^"]*)"$', SRC, re.M).group(1)
+MESA_PREFIX = re.search(r'^M3_GPU_MESA_PREFIX="([^"]*)"$', SRC, re.M).group(1)
+MESA_NAME = MESA_ENTRY.split(" ")[0]
+
+
+def staged_mesa():
+    """The shipped Mesa package, when it is at hand (AURORA_MESA_PKG, or the release staging directory)."""
+    version = re.search(r"^VERSION=(\S+)$", SRC, re.M).group(1)
+    stage = Path.home() / "source/aurora-recipes" / f"stage-{version.split('-')[-1]}"
+    for c in (os.environ.get("AURORA_MESA_PKG", ""), str(stage / MESA_NAME)):
+        if c and Path(c).is_file() and Path(c).name == MESA_NAME:
+            return Path(c)
+    return None
 
 
 class GpuExperimentReleaseTest(unittest.TestCase):
@@ -787,12 +800,34 @@ class GpuExperimentReleaseTest(unittest.TestCase):
                                  f"update {name}'s sha256 in M3_GPU_SCRIPTS")
 
     def test_mesa_placeholder(self):
-        mesa = re.search(r'^M3_GPU_MESA_PACKAGE="([^"]*)"$', SRC, re.M).group(1)
-        prefix = re.search(r'^M3_GPU_MESA_PREFIX="([^"]*)"$', SRC, re.M).group(1)
         # Empty until the G15G Mesa build exists; then both are set, the package as "file sha256".
-        if mesa or prefix:
-            self.assertRegex(mesa, r"^\S+\.pkg\.tar\.zst [0-9a-f]{64}$")
-            self.assertTrue(prefix.startswith("/"), prefix)
+        if MESA_ENTRY or MESA_PREFIX:
+            self.assertRegex(MESA_ENTRY, r"^\S+\.pkg\.tar\.zst [0-9a-f]{64}$")
+            self.assertTrue(MESA_PREFIX.startswith("/"), MESA_PREFIX)
+
+    def test_the_shipped_mesa_package(self):
+        # A release decision: change this test with it. The release ships the G15G prefix build.
+        self.assertRegex(MESA_NAME, r"^mesa-m3-g15g-\S+-aarch64\.pkg\.tar\.zst$")
+        self.assertEqual(MESA_PREFIX, "/opt/mesa-m3-g15g")
+        path = staged_mesa()
+        if path is None:
+            self.skipTest(f"{MESA_NAME} is not at hand (set AURORA_MESA_PKG)")
+        self.assertEqual(hashlib.sha256(path.read_bytes()).hexdigest(), MESA_ENTRY.split(" ")[1])
+        out = subprocess.run(["bsdtar", "-tf", str(path)], capture_output=True, text=True, check=True).stdout
+        names = [n for n in out.splitlines() if n]
+        info = subprocess.run(["bsdtar", "-xOf", str(path), ".PKGINFO"], capture_output=True, text=True,
+                              check=True).stdout
+        self.assertIn("pkgname = mesa-m3-g15g\n", info)
+        self.assertNotRegex(info, r"(?m)^(provides|conflict|replaces) = ")
+        # Nothing outside its prefix but its licence directory: system Mesa is untouched.
+        outside = [n for n in names if not n.startswith(".")
+                   and not n.startswith(MESA_PREFIX.lstrip("/") + "/")
+                   and not n.startswith("usr/share/licenses/mesa-m3-g15g")
+                   and n not in ("opt/", "usr/", "usr/share/", "usr/share/licenses/")]
+        self.assertEqual(outside, [])
+        # air-gpu-job.sh needs exactly one Vulkan driver file in the prefix.
+        icds = [n for n in names if n.startswith(MESA_PREFIX.lstrip("/") + "/share/vulkan/icd.d/") and n.endswith(".json")]
+        self.assertEqual(len(icds), 1, icds)
 
     def test_off_by_default(self):
         self.assertRegex(SRC, r"(?m)^M3_GPU_EXPERIMENT=0$")
@@ -812,9 +847,20 @@ class GpuExperimentFlagTest(Base):
         # --uninstall runs the installed air-gpu-oneshot.sh --disarm, which logs.
         (self.tmp / "bin/logger").write_text("#!/bin/sh\nexit 0\n")
         (self.tmp / "bin/logger").chmod(0o755)
+        # A stand-in for the shipped Mesa package, by its shipped name.
+        self.mesa_sha = self.mesa_fixture(MESA_NAME, "mesa-m3-g15g", MESA_PREFIX) if MESA_NAME else ""
+
+    def mesa_fixture(self, name, pkgname, prefix):
+        root = self.tmp / ("root-" + name)
+        (root / prefix.lstrip("/") / "lib").mkdir(parents=True)
+        (root / ".PKGINFO").write_text(f"pkgname = {pkgname}\npkgver = 1-1\n")
+        subprocess.run(["bsdtar", "--zstd", "-cf", str(self.tmp / "pkgs" / name), "-C", str(root), ".PKGINFO", "opt"],
+                       check=True)
+        return hashlib.sha256((self.tmp / "pkgs" / name).read_bytes()).hexdigest()
 
     def sh(self, body, check=True, flag=1):
-        return self.run_sh(f"M3_GPU_BIN='{self.bin}'\nM3_GPU_EXPERIMENT={flag}\n{body}", check=check)
+        mesa = f'M3_GPU_MESA_PACKAGE="{MESA_NAME} {self.mesa_sha}"\n' if MESA_NAME else ""
+        return self.run_sh(f"M3_GPU_BIN='{self.bin}'\nM3_GPU_EXPERIMENT={flag}\n{mesa}{body}", check=check)
 
     def test_air_gets_the_scripts_and_nothing_is_armed(self):
         self.mac("j613")
@@ -825,16 +871,21 @@ class GpuExperimentFlagTest(Base):
                 self.assertIn(name, self.downloaded())
                 self.assertTrue(os.access(self.bin / name, os.X_OK))
                 self.assertEqual((self.bin / name).read_bytes(), (TOOLS / name).read_bytes())
-        self.assertIn("--m3-gpu-experiment: installing the M3 Air GPU experiment's scripts", proc.stderr)
+        self.assertIn("--m3-gpu-experiment: installing the M3 Air GPU experiment's scripts and Mesa prefix",
+                      proc.stderr)
         self.assertIn("Nothing is armed", proc.stdout)
-        self.assertIn("no G15G Mesa prefix yet", proc.stdout)
+        # The shipped Mesa prefix goes on with the kernel, in the same pacman -U.
+        self.assertIn(MESA_NAME, self.downloaded())
+        self.assertRegex(self.log(), rf"pacman -U .*linux-aurora.*{re.escape(MESA_NAME)}")
+        self.assertIn(f"The G15G Mesa prefix for air-gpu-job.sh: {MESA_PREFIX}", proc.stdout)
         self.assertIn("does not hand the GPU over", proc.stdout)
         self.assertIn("pacman -S --needed --noconfirm python vulkan-icd-loader", self.log())
         # The kernel-only Air keeps its boot.bin; nothing in /etc/m1n1.conf.
         self.assertEqual(self.boot.read_bytes(), before)
         self.assertFalse(self.m1n1_conf.exists())
         rec = (self.state / "m3-gpu-experiment").read_text().splitlines()
-        self.assertEqual(sorted(l.split()[1] for l in rec), sorted(n for n, _ in SCRIPTS))
+        self.assertEqual(sorted(l.split()[1] for l in rec if l.startswith("script ")), sorted(n for n, _ in SCRIPTS))
+        self.assertIn("mesa mesa-m3-g15g", rec)
 
         # A plain rerun keeps them and says so.
         proc = self.sh("M3_TRY=0\ninstall_all", flag=0)
@@ -844,7 +895,16 @@ class GpuExperimentFlagTest(Base):
         self.sh("uninstall_all", flag=0)
         for name, _ in SCRIPTS:
             self.assertFalse((self.bin / name).exists(), name)
+        self.assertIn("pacman -Rns --noconfirm mesa-m3-g15g", self.log())
         self.assertFalse(self.state.exists())
+
+    def test_without_a_mesa_package(self):
+        # A release with no Mesa build installs the scripts alone and says so.
+        self.mac("j613")
+        proc = self.sh('M3_GPU_MESA_PACKAGE=""\nM3_GPU_MESA_PREFIX=""\nM3_TRY=0\ninstall_all')
+        self.assertFalse([d for d in self.downloaded() if d.startswith("mesa-")])
+        self.assertIn("no G15G Mesa prefix yet", proc.stdout)
+        self.assertNotIn("mesa ", (self.state / "m3-gpu-experiment").read_text())
 
     def test_with_the_handoff(self):
         self.mac("j613")
@@ -902,7 +962,7 @@ class GpuExperimentFlagTest(Base):
     def test_without_the_flag_nothing_changes(self):
         self.mac("j613")
         self.sh("M3_TRY=0\ninstall_all", flag=0)
-        self.assertFalse([d for d in self.downloaded() if d.startswith("air-gpu-")])
+        self.assertFalse([d for d in self.downloaded() if d.startswith(("air-gpu-", "mesa-"))])
         self.assertFalse(self.bin.exists())
         self.assertFalse((self.state / "m3-gpu-experiment").exists())
 
