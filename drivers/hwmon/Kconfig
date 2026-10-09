@@ -399,8 +399,9 @@ config SENSORS_APPLE_PMP_J613
 	  thermal or fan control.
 
 	  Build it as a module: it is loaded when the J613 25G83 PMP device
-	  appears, which happens after appledrm enables it. The module will
-	  be called apple-pmp-j613-hwmon.
+	  appears, which happens after appledrm enables it. It then polls
+	  for up to two minutes until the PMP firmware has published its
+	  records. The module will be called apple-pmp-j613-hwmon.
 
 config SENSORS_ARM_SCMI
 	tristate "ARM SCMI Sensors"

@@ -9,6 +9,7 @@
 #include <linux/slab.h>
 #include <linux/unaligned.h>
 #include <linux/vmalloc.h>
+#include <linux/workqueue.h>
 
 #define SRAM_BASE 0x2d0500000ULL
 #define SRAM_SIZE 0x80000
@@ -114,12 +115,87 @@ static const struct hwmon_channel_info * const channels[] = {
 };
 static const struct hwmon_chip_info chip = { .ops = &ops, .info = channels };
 
+/*
+ * The PMP firmware publishes its sensor records some time after the PMP
+ * endpoint comes up, and nothing signals when. The modalias below loads this
+ * module as soon as the PMP device appears, which can be before the PMP
+ * driver has bound and before the records exist, so poll for the records
+ * (bounded) instead of scanning once.
+ */
+#define SCAN_INTERVAL_MS 500
+#define SCAN_ATTEMPTS 240
+
+static struct delayed_work scan_work;
+static unsigned int attempts;
+
+/* 0 when all six records are found once each, -EAGAIN when not yet published. */
+static int scan(void)
+{
+	u8 *snapshot;
+	unsigned int i, j, hits;
+	int ret = 0;
+
+	if (!parent->dev.driver)
+		return -EAGAIN;
+	snapshot = vmalloc(SRAM_SIZE);
+	if (!snapshot)
+		return -ENOMEM;
+	for (i = 0; i < SRAM_SIZE; i += 4)
+		put_unaligned_le32(readl(sram + i), snapshot + i);
+	for (j = 0; j < CHANNELS; j++) {
+		hits = 0;
+		for (i = NAME_OFFSET; i + 16 <= SRAM_SIZE; i += 4) {
+			if (!memcmp(snapshot + i, names[j], 7) &&
+			    get_unaligned_le32(snapshot + i - NAME_OFFSET) == j + 1 &&
+			    get_unaligned_le32(snapshot + i - NAME_OFFSET + 4) == 6) {
+				offsets[j] = i - NAME_OFFSET;
+				hits++;
+			}
+		}
+		if (!hits) {
+			ret = -EAGAIN;
+			break;
+		}
+		if (hits != 1 || offsets[j] + RECORD_SIZE > SRAM_SIZE ||
+		    (j && offsets[j] != offsets[0] + j * RECORD_SIZE)) {
+			ret = -EIO;
+			break;
+		}
+	}
+	vfree(snapshot);
+	return ret;
+}
+
+static void scan_fn(struct work_struct *work)
+{
+	struct device *dev;
+	int ret;
+
+	attempts++;
+	ret = scan();
+	if (ret == -EAGAIN && attempts < SCAN_ATTEMPTS) {
+		schedule_delayed_work(&scan_work, msecs_to_jiffies(SCAN_INTERVAL_MS));
+		return;
+	}
+	if (ret) {
+		pr_warn("j613-pmp: sensor records %s after %u scans (%d); no telemetry\n",
+			ret == -EAGAIN ? "never published" : "inconsistent", attempts, ret);
+		return;
+	}
+	dev = hwmon_device_register_with_info(&parent->dev, "j613_pmp", NULL, &chip, NULL);
+	if (IS_ERR(dev)) {
+		pr_warn("j613-pmp: hwmon registration failed (%ld)\n", PTR_ERR(dev));
+		return;
+	}
+	hwmon = dev;
+	pr_info("j613-pmp: read-only six-channel telemetry after %u scans; current samples only\n",
+		attempts);
+}
+
 static int __init pmp_j613_init(void)
 {
 	struct device_node *node;
 	const char *uuid;
-	u8 *snapshot;
-	unsigned int i, j, hits;
 	int ret;
 
 	if (!of_machine_is_compatible("apple,j613"))
@@ -139,52 +215,19 @@ static int __init pmp_j613_init(void)
 		return -ENODEV;
 	sram = ioremap(SRAM_BASE, SRAM_SIZE);
 	if (!sram) {
-		ret = -ENOMEM;
-		goto put_parent;
+		put_device(&parent->dev);
+		return -ENOMEM;
 	}
-	snapshot = vmalloc(SRAM_SIZE);
-	if (!snapshot) {
-		ret = -ENOMEM;
-		goto unmap;
-	}
-	for (i = 0; i < SRAM_SIZE; i += 4)
-		put_unaligned_le32(readl(sram + i), snapshot + i);
-	for (j = 0; j < CHANNELS; j++) {
-		hits = 0;
-		for (i = NAME_OFFSET; i + 16 <= SRAM_SIZE; i += 4) {
-			if (!memcmp(snapshot + i, names[j], 7) &&
-			    get_unaligned_le32(snapshot + i - NAME_OFFSET) == j + 1 &&
-			    get_unaligned_le32(snapshot + i - NAME_OFFSET + 4) == 6) {
-				offsets[j] = i - NAME_OFFSET;
-				hits++;
-			}
-		}
-		if (hits != 1 || offsets[j] + RECORD_SIZE > SRAM_SIZE ||
-		    (j && offsets[j] != offsets[0] + j * RECORD_SIZE) ||
-		    get_unaligned_le32(snapshot + offsets[j]) != j + 1 ||
-		    get_unaligned_le32(snapshot + offsets[j] + 4) != 6) {
-			ret = -EIO;
-			goto free_snapshot;
-		}
-	}
-	hwmon = hwmon_device_register_with_info(&parent->dev, "j613_pmp", NULL, &chip, NULL);
-	ret = PTR_ERR_OR_ZERO(hwmon);
-	if (!ret)
-		pr_info("j613-pmp: read-only six-channel telemetry; current samples only\n");
-free_snapshot:
-	vfree(snapshot);
-	if (!ret)
-		return 0;
-unmap:
-	iounmap(sram);
-put_parent:
-	put_device(&parent->dev);
-	return ret;
+	INIT_DELAYED_WORK(&scan_work, scan_fn);
+	schedule_delayed_work(&scan_work, 0);
+	return 0;
 }
 
 static void __exit pmp_j613_exit(void)
 {
-	hwmon_device_unregister(hwmon);
+	cancel_delayed_work_sync(&scan_work);
+	if (hwmon)
+		hwmon_device_unregister(hwmon);
 	iounmap(sram);
 	put_device(&parent->dev);
 }
@@ -192,7 +235,8 @@ static void __exit pmp_j613_exit(void)
 /*
  * There is no driver to bind: the PMP driver owns the device. The table only
  * gives udev a modalias, so the module loads once the PMP device appears
- * (on 25G83, appledrm enables it); init then applies the J613 checks above.
+ * (on 25G83, appledrm enables it); init then applies the J613 checks above
+ * and the delayed scan waits for the PMP driver and its records.
  */
 static const struct of_device_id pmp_j613_of_match[] = {
 	{ .compatible = "apple,t8122-pmp-v2" },
