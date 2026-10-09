@@ -3564,7 +3564,7 @@ packages_for_this_mac() {
 }
 
 install_all() {
-  local entry file sha kernel chain
+  local entry file sha kernel chain pending
   local -a entries
   release_source
   require_supported_soc
@@ -3586,6 +3586,23 @@ install_all() {
     [[ -z $(m3_pro_mesa_needs_unmet) ]] || die "persistent GPU requires satisfied Mesa dependencies before installation"
   fi
   m1n1_keep_plan
+  # Before anything changes. linux-aurora-headers pulls in pahole, and fprintd
+  # below comes from the repositories: on a Mac whose package database has gone
+  # stale, pacman resolves those to versions the mirror no longer carries and
+  # the transaction dies with a 404. So refresh first. After that refresh, -S
+  # and -U on top of pending upgrades are a partial upgrade (a newer llvm-libs
+  # without the Mesa built against it stops the login screen), so stop on a
+  # Mac that has any. Held packages (IgnorePkg, which includes this script's
+  # pin) are "[ignored]" and don't count.
+  say "Refreshing the package database"
+  $sudo pacman -Sy --noconfirm || warn "could not refresh the package database; continuing"
+  pending=$(LC_ALL=C pacman -Qu --color never 2>/dev/null | grep -v ' \[ignored\]$' || true)
+  if [[ -n $pending ]]; then
+    die "this Mac has $(wc -l <<<"$pending") package upgrade(s) pending (pacman -Qu; first: $(cut -d' ' -f1 <<<"$pending" | head -8 | paste -sd' ')).
+    Installing on top of them would be a partial upgrade (a newer llvm-libs without the
+    Mesa built against it stops the login screen). Run 'omarchy update', reboot, then run
+    this again. Nothing was installed."
+  fi
   if ((!DESKTOP_FIXES)); then work=$(mktemp -d); fi
   trap 'm3_install_cleanup' EXIT
   if is_neo && ! m1n1_for_this_mac; then say "Keeping this MacBook Neo's own m1n1 (m1n1-aurora has no T8140 support)"; fi
@@ -3657,13 +3674,6 @@ install_all() {
     # update-m1n1 is frozen (m1n1_keep_plan): prove boot.bin stays as it is.
     *) if ((M1N1_KEEP)); then M3_BOOTBIN_SHA=$(m3_bootbin_sha); fi ;;
   esac
-
-  # linux-aurora-headers pulls in pahole, and fprintd below comes from the
-  # repositories. On a Mac whose package database has gone stale, pacman
-  # resolves those to versions the mirror no longer carries and the whole
-  # transaction dies with a 404 after the packages are already downloaded.
-  say "Refreshing the package database"
-  $sudo pacman -Sy --noconfirm || warn "could not refresh the package database; continuing"
 
   say "Installing the aurora-sep kernel, libfprint with the Apple SEP driver, fprintd and aurora-touchid"
   # --ask 4 accepts replacing linux-asahi (and its headers), which linux-aurora conflicts with.
@@ -3883,6 +3893,22 @@ uninstall_all() {
     handoff) m3_restore_bringup ;;
   esac
   $sudo rm -f "$MODPROBE_CONF"
+  # The persistent GPU route on Limine retained the previous kernel: a custom
+  # 'Aurora previous (GPU off)' node, its UKI on the ESP, and a unit that copies
+  # its modules back from $STATE, which is deleted below. Take all three out.
+  if [[ $(boot_chain) == limine && -f $STATE/m3-known-entry.json ]]; then
+    local target
+    if target=$(esp_bootbin); then
+      m3_boot_profile_install
+      $sudo python3 "$M3_BOOT_PROFILE_HELPER" remove --esp "${target%/m1n1/boot.bin}" --state "$STATE" ||
+        warn "could not remove 'Aurora previous (GPU off)' from limine.conf"
+      $sudo rm -f "$M3_BOOT_PROFILE_HELPER"
+    else
+      warn "no mounted FAT boot partition: 'Aurora previous (GPU off)' stays in limine.conf"
+    fi
+    $sudo systemctl disable aurora-sep-fallback-modules.service 2>/dev/null || true
+    $sudo rm -f /etc/systemd/system/aurora-sep-fallback-modules.service
+  fi
   m3_persistent_remove
   m3_gpu_remove
   m3_pro_mesa_remove
@@ -6374,6 +6400,22 @@ def limine(args):
         text = regular(conf).read_text()
         clean = without_block(text)
         state_path = args.state / 'm3-known-entry.json'
+        if args.action == 'remove':
+            # --uninstall: drop the custom GPU-off node and its retained UKI.
+            output = clean
+            if re.search(r'^\s*/' + re.escape(FALLBACK) + r'\s*$', clean, re.M):
+                lines, fields = entry(clean, FALLBACK, 1)
+                start = next(i for i, l in enumerate(lines) if l.strip() == '/' + FALLBACK)
+                end = start + 1
+                while end < len(lines) and not lines[end].lstrip().startswith('/'): end += 1
+                output = ''.join(lines[:start] + lines[end:]).rstrip() + '\n'
+            if regular(conf).read_text() != text: raise ValueError('Limine configuration changed during remove')
+            atomic(conf, output.encode())
+            if state_path.exists():
+                saved = json.loads(regular(state_path).read_text())
+                m = re.fullmatch(r'boot\(\):(/EFI/Linux/aurora-m3-previous-[0-9a-f]{16}\.efi)#[0-9a-f]{128}', saved['path'])
+                if m: (args.esp / m[1].lstrip('/')).unlink(missing_ok=True)
+            return
         args.state.mkdir(parents=True, exist_ok=True)
         if args.action == 'retain':
             if state_path.exists():
@@ -6434,7 +6476,7 @@ def limine(args):
 
 def main():
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument('action', choices=('retain', 'publish', 'disarm'))
+    p.add_argument('action', choices=('retain', 'publish', 'disarm', 'remove'))
     p.add_argument('--esp', type=Path, required=True)
     p.add_argument('--state', type=Path, required=True)
     p.add_argument('--defaults', type=Path, default=Path('/etc/default/limine'))

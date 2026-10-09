@@ -121,6 +121,22 @@ def limine(args):
         text = regular(conf).read_text()
         clean = without_block(text)
         state_path = args.state / 'm3-known-entry.json'
+        if args.action == 'remove':
+            # --uninstall: drop the custom GPU-off node and its retained UKI.
+            output = clean
+            if re.search(r'^\s*/' + re.escape(FALLBACK) + r'\s*$', clean, re.M):
+                lines, fields = entry(clean, FALLBACK, 1)
+                start = next(i for i, l in enumerate(lines) if l.strip() == '/' + FALLBACK)
+                end = start + 1
+                while end < len(lines) and not lines[end].lstrip().startswith('/'): end += 1
+                output = ''.join(lines[:start] + lines[end:]).rstrip() + '\n'
+            if regular(conf).read_text() != text: raise ValueError('Limine configuration changed during remove')
+            atomic(conf, output.encode())
+            if state_path.exists():
+                saved = json.loads(regular(state_path).read_text())
+                m = re.fullmatch(r'boot\(\):(/EFI/Linux/aurora-m3-previous-[0-9a-f]{16}\.efi)#[0-9a-f]{128}', saved['path'])
+                if m: (args.esp / m[1].lstrip('/')).unlink(missing_ok=True)
+            return
         args.state.mkdir(parents=True, exist_ok=True)
         if args.action == 'retain':
             if state_path.exists():
@@ -181,7 +197,7 @@ def limine(args):
 
 def main():
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument('action', choices=('retain', 'publish', 'disarm'))
+    p.add_argument('action', choices=('retain', 'publish', 'disarm', 'remove'))
     p.add_argument('--esp', type=Path, required=True)
     p.add_argument('--state', type=Path, required=True)
     p.add_argument('--defaults', type=Path, default=Path('/etc/default/limine'))

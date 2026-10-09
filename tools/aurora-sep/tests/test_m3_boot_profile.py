@@ -145,3 +145,36 @@ class BootProfile(unittest.TestCase):
         self.run_helper('disarm')
         self.assertNotIn('asahi.t8122_start=1',self.conf.read_text())
         self.assertEqual(self.conf.read_text().count('asahi.t8122_start=0 mesa_m3=off'),2)
+
+    def test_remove_drops_gpu_off_entry_and_retained_uki(self):
+        self.run_helper('retain')
+        saved=json.loads((self.state/'m3-known-entry.json').read_text())
+        retained=self.esp/saved['path'].split('#')[0].removeprefix('boot():/')
+        self.assertTrue(retained.exists())
+        self.run_helper('remove')
+        self.assertEqual(self.conf.read_text(),self.original)
+        self.assertFalse(retained.exists())
+        self.assertTrue(self.uki.exists())
+        self.run_helper('remove')
+        self.assertEqual(self.conf.read_text(),self.original)
+
+    def test_remove_after_publish_keeps_the_main_entry(self):
+        self.run_helper('retain');self.run_helper('publish')
+        self.run_helper('remove')
+        text=self.conf.read_text()
+        self.assertNotIn('/Aurora previous (GPU off)',text)
+        self.assertNotIn('mesa_m3=off',text)
+        self.assertIn('  //linux-aurora\n',text)
+        self.assertTrue(self.uki.exists())
+
+    def test_remove_without_retained_entry_changes_nothing(self):
+        self.run_helper('remove')
+        self.assertEqual(self.conf.read_text(),self.original)
+        self.assertEqual(list((self.esp/'EFI/Linux').glob('aurora-m3-previous-*')),[])
+
+    def test_remove_refuses_a_malformed_gpu_off_entry(self):
+        self.run_helper('retain')
+        broken=self.conf.read_text().replace('    protocol: efi\n    path: boot():/EFI/Linux/aurora-m3-previous','    path: boot():/EFI/Linux/aurora-m3-previous')
+        self.conf.write_text(broken)
+        self.run_helper('remove',False)
+        self.assertEqual(self.conf.read_text(),broken)

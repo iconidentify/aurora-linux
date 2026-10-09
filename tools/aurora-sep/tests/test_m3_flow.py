@@ -118,6 +118,10 @@ case $op in
     done
     exit $rc ;;
   -Qq) exit 1 ;;
+  # Pending upgrades after -Sy, as "name old -> new [ignored]" lines; FAKE_UPGRADES has them.
+  -Qu)
+    [[ -n ${FAKE_UPGRADES:-} ]] || exit 1
+    printf '%s\n' "$FAKE_UPGRADES" ;;
   -Qlq)
     [[ $1 == linux-aurora ]] && grep -qx linux-aurora "$FAKE/installed" &&
       echo /usr/lib/modules/7.1.12-2-11.36-sep-ARCH/dtbs/fake.dtb
@@ -800,6 +804,73 @@ class M3FlowTest(M3FlowBase):
         self.assertEqual(self.update_conf.read_text(), conf)
         self.assertTrue(self.boot.read_bytes().startswith(b"M1N1:neo-own\n"))
         self.assertIn("libfprint m1n1", self.log())
+
+    # Package database refresh and pending upgrades
+
+    def test_pending_upgrades_stop_the_install_before_anything_changes(self):
+        self.mac("j516s")
+        self.extra_env["FAKE_UPGRADES"] = "llvm-libs 20.1.8-1 -> 21.1.2-1\nmesa 1:25.2.4-1 -> 1:25.2.5-1"
+        proc = self.install(check=False)
+        self.assertNotEqual(proc.returncode, 0)
+        err = " ".join(proc.stderr.split())
+        self.assertIn("2 package upgrade(s) pending (pacman -Qu; first: llvm-libs mesa)", err)
+        self.assertIn("Nothing was installed", err)
+        log = self.log()
+        self.assertLess(log.index("pacman -Sy --noconfirm"), log.index("pacman -Qu"))
+        self.assertNotIn("pacman -U", log)
+        self.assertNotIn("pacman -S ", log)
+        self.assertEqual(self.downloaded(), [])
+        self.assertEqual(self.boot.read_bytes(), b"M1N1:original\n")
+        self.assertFalse((self.state / "m3-mode").exists())
+
+    def test_held_packages_do_not_count_as_pending(self):
+        self.mac("j516s")
+        self.extra_env["FAKE_UPGRADES"] = "libfprint 1.94.9-1 -> 1.94.10-1 [ignored]"
+        self.install()
+        self.assertIn("pacman -U", self.log())
+
+    def test_the_refresh_comes_before_any_download(self):
+        self.mac("j516s")
+        self.install()
+        log = self.log()
+        self.assertLess(log.index("pacman -Sy --noconfirm"), log.index("curl "))
+        self.assertEqual(log.count("pacman -Sy --noconfirm\n"), 1)
+
+    # Limine --uninstall after the persistent GPU route retained the previous kernel
+
+    def test_limine_uninstall_removes_the_retained_gpu_off_entry(self):
+        self.mac("j516s")
+        self.install()
+        helper = self.tmp / "bin/fake-boot-profile"
+        # Run as "python3 HELPER remove ...", as the real one is.
+        helper.write_text("import os, sys\n"
+                          "with open(os.environ['FAKE'] + '/log', 'a') as log:\n"
+                          "    print('boot-profile', *sys.argv[1:], file=log)\n")
+        helper.chmod(0o755)
+        (self.state / "m3-known-entry.json").write_text("{}\n")
+        self.run_sh(f"""
+M3_BOOT_PROFILE_HELPER='{helper}'
+m3_boot_profile_install() {{ echo "boot-profile install" >>"$FAKE/log"; }}
+systemctl() {{ echo "systemctl $*" >>"$FAKE/log"; }}
+uninstall_all
+""")
+        log = self.log()
+        self.assertIn(f"boot-profile remove --esp {self.tmp}/esp --state {self.state}\n", log)
+        self.assertLess(log.index("boot-profile install"), log.index("boot-profile remove"))
+        self.assertIn("systemctl disable aurora-sep-fallback-modules.service", log)
+        self.assertFalse(helper.exists())
+        self.assertFalse(self.state.exists())
+
+    def test_limine_uninstall_without_a_retained_entry_leaves_limine_alone(self):
+        self.mac("j516s")
+        self.install()
+        self.run_sh("""
+m3_boot_profile_install() { echo "boot-profile install" >>"$FAKE/log"; }
+systemctl() { echo "systemctl $*" >>"$FAKE/log"; }
+uninstall_all
+""")
+        self.assertNotIn("boot-profile", self.log())
+        self.assertNotIn("aurora-sep-fallback-modules", self.log())
 
 
 if __name__ == "__main__":
