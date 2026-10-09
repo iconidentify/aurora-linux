@@ -1,0 +1,38 @@
+// SPDX-License-Identifier: GPL-2.0+ OR MIT
+/*
+ * J615 with the exact 25G83 firmware profile. EXPERIMENTAL: built from the
+ * J615 device tree in Apple's macOS 26.6.2 (25G83) restore image, not booted
+ * on a J615 yet.
+ *
+ * That restore image gives the J615 the J613's DCP, PMP and GPU firmware
+ * (same BuildManifest entries and digests), and its J615 ADT differs from the
+ * J613's only in identity, speakers, Wi-Fi module, the CPU's sustainable power
+ * target, the ANS tunable bundle name and the trackpad personality: the DCP,
+ * display, PMP, SGX and GFX-ASC nodes are the same but for phandles. So this
+ * is the J615 board with the same 25G83 profile (the "j613-25g83" names are
+ * that firmware profile). The speakers stay exactly as t8122-j615.dts has
+ * them. m1n1 hands the J615 display or GPU over only with
+ * chosen.asahi,j615-25g83-experimental=1, and Linux checks it again.
+ */
+#include "t8122-j615.dts"
+#include "t8122-j613-dcp-25g83.dtsi"
+#include "t8122-j613-25g83-qspi.dtsi"
+
+/* As on the J613: the 25G83 MTP_SYS uses GPIO-mediated AFE power sequencing
+ * (the J615 ADT's afe-reset function is the J613's, gP08). */
+&mtp_hid {
+	multi-touch {
+		apple,power-method = <2>;
+	};
+};
+
+/*
+ * The QSPI controller is in the J615 restore-image ADT exactly as on the
+ * J613, but the NVRAM partition's place on the NOR is filled in by iBoot at
+ * boot (0x700000+0x100000 on the J613) and has not been read on a J615.
+ * Keep it read-only here until a J615 report shows the same reg: reading a
+ * wrong range is harmless, writing one is not.
+ */
+&nvram_qspi {
+	read-only;
+};
