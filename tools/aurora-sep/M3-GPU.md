@@ -63,7 +63,39 @@ J613 already booted from its own exact 26.6.2/25G83 volume group with an
 existing matched `v1.6.1-m3next.stage1` handoff may use
 `--m3-profile=j613-25g83`. This selects `/opt/mesa-m3/25g83` and
 `j613-25g83-hal200`. Its checker reports OpenGL readback and **Vulkan
-unavailable**. J615 native25 is unsupported. Native scratch shaders are
+unavailable**. J615 native25 is experimental (below). Native scratch shaders are
 refused; power calibration remains experimental. Legacy 14/Pro Vulkan
 stays separate. Firmware and calibration remain specific to each Mac;
 the installer migrates neither firmware nor stage 1.
+
+## J615 on 26.6.2 (experimental)
+
+Not yet booted on a J615. The J615 runs the same 26.6.2 DCP, GPU and PMP
+firmware as the J613; its handoff is derived from the J615 device tree in
+Apple's 26.6.2 restore image. The profile keeps its 25G83 ABI name
+(`j613-25g83`, `j613-25g83-hal200`).
+
+Prerequisites:
+
+- J615 booted from its own 26.6.2/25G83 volume group;
+- the J615-capable stage 1 `v1.6.1-m3air25.stage1` (the J613-only
+  `v1.6.1-m3next.stage1` refuses a J615);
+- a matched installer whose release manifest lists `j615` in
+  `native25_boards`. Other releases refuse.
+
+```sh
+bash install-aurora-sep.sh --m3-profile=j615-25g83
+```
+
+This is the J613 25G83 install plus m1n1's
+`chosen.asahi,j615-25g83-experimental=1`, which m1n1 and the kernel both
+require before the J615 display or GPU is handed over. `--m3-gpu` and
+`--m3-profile=j613-25g83` never select it on a J615.
+
+Expect the same result as the J613: OpenGL readback, Vulkan unavailable.
+Any identity mismatch leaves the GPU off and the desktop on the boot
+framebuffer. **Aurora previous (GPU off)** stays in the boot menu.
+Speakers are unchanged by this profile.
+
+Report either way with `aurora-m3-gpu-check --details` and the same
+installer's `--m3-report` output.
