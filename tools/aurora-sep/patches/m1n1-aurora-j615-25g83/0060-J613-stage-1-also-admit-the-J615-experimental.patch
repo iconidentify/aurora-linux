@@ -1,0 +1,56 @@
+From 80719afeb5e541841d4847951911153f8c2be444 Mon Sep 17 00:00:00 2001
+From: Satya Benson <satya@benson.earth>
+Date: Fri, 9 Oct 2026 18:25:55 -0400
+Subject: [PATCH 60/60] J613 stage 1: also admit the J615 (experimental)
+
+Mirror of the dirtyroom stage-1 change: the guard takes ADT target-type
+J615 as well as J613 (T8122, OS firmware 26.6.2 only) and the panel
+message names both. Stage 2 decides what a J615 boot hands over.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ src/main.c | 18 ++++++++++++++----
+ 1 file changed, 14 insertions(+), 4 deletions(-)
+
+diff --git a/src/main.c b/src/main.c
+index 74f5ca7..590bbf9 100644
+--- a/src/main.c
++++ b/src/main.c
+@@ -76,12 +76,21 @@ void run_actions(void)
+ 
+ #ifdef J613_ESP_STAGE1
+     const char *target = adt_getprop(adt, 0, "target-type", NULL);
+-    bool j613 = chip_id == T8122 && target && !strcmp(target, "J613") &&
+-                os_firmware.version == V26_6_2;
++    /*
++     * J615 (M3 Air 15"): EXPERIMENTAL, not booted on a J615. Its 26.6.2 iBoot
++     * and ADT are its own, but the restore image gives it the J613's DCP image
++     * and display ADT, so the panel DCP's __OS_LOG is expected in the same place
++     * after this image. Stage 2 decides what it hands over (it needs
++     * chosen.asahi,j615-25g83-experimental=1 on a J615); this only chainloads.
++     */
++    bool board = target && (!strcmp(target, "J613") || !strcmp(target, "J615"));
++    bool j613 = chip_id == T8122 && board && os_firmware.version == V26_6_2;
+     if (!j613) {
+-        printf("J613 Stage 1: board/25G83 guard rejected; proxy only\n");
++        printf("J613 Stage 1: board/25G83 guard rejected (needs J613 or J615, 26.6.2); proxy only\n");
+         goto proxy_fallback;
+     }
++    if (!strcmp(target, "J615"))
++        printf("J613 Stage 1: J615 admitted (EXPERIMENTAL)\n");
+     if (!stage1_config_target())
+         goto proxy_fallback;
+     /* A zero window skips USB entirely: straight to the ESP file, as a plain stage 1 does. */
+@@ -171,7 +180,8 @@ proxy_fallback:
+ #ifdef J613_ESP_STAGE1
+     /* Shown on the panel: this is where a user without a USB host ends up. */
+     printf("\nJ613 Stage 1: could not start Linux from the EFI partition.\n"
+-           "  Needs: MacBook Air 13\" M3 (J613), this volume's macOS exactly 26.6.2,\n"
++           "  Needs: MacBook Air M3 (13\" J613; 15\" J615 experimental), this volume's\n"
++           "  macOS exactly 26.6.2,\n"
+            "  and the stage-2 file named in this stage 1 (fill_stage1_config.py --check).\n"
+            "  Hold the power button to shut down, then hold it again to choose another system.\n");
+ #endif
+-- 
+2.54.0 (Apple Git-157)
+

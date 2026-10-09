@@ -1,0 +1,67 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Satya Benson <satya@benson.earth>
+Date: Fri, 9 Oct 2026 15:24:11 -0400
+Subject: [PATCH] J613 stage 1: no USB with a zero window; say on screen why it
+ stopped
+
+Same change as aurora-silicon/m3_m1n1_dirtyroom a7f0b45, for this recipe's
+0054 port: window_ms = 0 skips USB bring-up and loads the ESP file at
+once, and a failed start prints on the panel what stage 1 needs. The
+filler defaults to --window-ms 0.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ src/main.c                  | 12 +++++++++++-
+ tools/fill_stage1_config.py |  2 +-
+ 2 files changed, 12 insertions(+), 2 deletions(-)
+
+diff --git a/src/main.c b/src/main.c
+index 2a82ea8..74f5ca7 100644
+--- a/src/main.c
++++ b/src/main.c
+@@ -84,7 +84,8 @@ void run_actions(void)
+     }
+     if (!stage1_config_target())
+         goto proxy_fallback;
+-    if (stage1_config_target()) {
++    /* A zero window skips USB entirely: straight to the ESP file, as a plain stage 1 does. */
++    if (stage1_config_window_ms()) {
+         u32 window_ms = stage1_config_window_ms();
+         usb_init();
+         usb_iodev_init();
+@@ -106,6 +107,8 @@ void run_actions(void)
+             mdelay(10);
+         }
+         printf("J613 Stage 1: window expired; loading ESP candidate\n");
++    } else {
++        printf("J613 Stage 1: no USB window; loading ESP candidate\n");
+     }
+ #endif
+ 
+@@ -165,6 +168,13 @@ proxy_fallback:
+     fb_set_active(true);
+ 
+     printf("No valid payload found\n");
++#ifdef J613_ESP_STAGE1
++    /* Shown on the panel: this is where a user without a USB host ends up. */
++    printf("\nJ613 Stage 1: could not start Linux from the EFI partition.\n"
++           "  Needs: MacBook Air 13\" M3 (J613), this volume's macOS exactly 26.6.2,\n"
++           "  and the stage-2 file named in this stage 1 (fill_stage1_config.py --check).\n"
++           "  Hold the power button to shut down, then hold it again to choose another system.\n");
++#endif
+ 
+ #ifndef BRINGUP
+     if (!usb_up) {
+diff --git a/tools/fill_stage1_config.py b/tools/fill_stage1_config.py
+index c21484e..6d8bf91 100644
+--- a/tools/fill_stage1_config.py
++++ b/tools/fill_stage1_config.py
+@@ -35,7 +35,7 @@ def main():
+     p.add_argument('output', type=Path)
+     p.add_argument('--esp-uuid', required=True)
+     p.add_argument('--target', default='m1n1/boot.bin')
+-    p.add_argument('--window-ms', type=int, default=15000)
++    p.add_argument('--window-ms', type=int, default=0, help='USB proxy window; 0 (default) boots stage 2 at once')
+     a = p.parse_args()
+     if a.image.resolve() == a.output.resolve(): p.error('output must differ from source image')
+     try: result = fill(a.image.read_bytes(), a.esp_uuid, a.target, a.window_ms)

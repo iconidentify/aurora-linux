@@ -1,0 +1,79 @@
+From 97b8050e3aafb700ac1ca898942e1994bc0d1557 Mon Sep 17 00:00:00 2001
+From: Satya Benson <satya@benson.earth>
+Date: Fri, 9 Oct 2026 18:25:53 -0400
+Subject: [PATCH] J613 stage 1: also admit the J615 (experimental)
+
+The J615 (M3 Air 15") boots macOS 26.6.2 from the same restore image as
+the J613: the BuildManifest gives both the same DCP, PMP and GPU images
+and kernelcache, and the J615's ADT display, PMP and GPU nodes equal the
+J613's but for phandles. Let the stage-1 guard take ADT target-type J615
+as well as J613 (still T8122 and OS firmware 26.6.2 only), say so on the
+console, and name both on the panel message.
+
+Stage 1 only chainloads. What a J615 boot hands over is stage 2's
+decision, which on the 25G83 path needs
+chosen.asahi,j615-25g83-experimental=1. Not booted on a J615: in
+particular the panel DCP __OS_LOG placement after the installed image is
+expected, not measured, to match the J613's.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ src/main.c                 | 18 ++++++++++++++----
+ tools/j613-stage1/build.sh |  2 +-
+ 2 files changed, 15 insertions(+), 5 deletions(-)
+
+diff --git a/src/main.c b/src/main.c
+index 404dba2..3fa3ed2 100644
+--- a/src/main.c
++++ b/src/main.c
+@@ -78,12 +78,21 @@ void run_actions(void)
+ 
+ #ifdef J613_ESP_STAGE1
+     const char *target = adt_getprop(adt, 0, "target-type", NULL);
+-    bool j613 = chip_id == T8122 && target && !strcmp(target, "J613") &&
+-                os_firmware.version == V26_6_2;
++    /*
++     * J615 (M3 Air 15"): EXPERIMENTAL, not booted on a J615. Its 26.6.2 iBoot
++     * and ADT are its own, but the restore image gives it the J613's DCP image
++     * and display ADT, so the panel DCP's __OS_LOG is expected in the same place
++     * after this image. Stage 2 decides what it hands over (it needs
++     * chosen.asahi,j615-25g83-experimental=1 on a J615); this only chainloads.
++     */
++    bool board = target && (!strcmp(target, "J613") || !strcmp(target, "J615"));
++    bool j613 = chip_id == T8122 && board && os_firmware.version == V26_6_2;
+     if (!j613) {
+-        printf("J613 Stage 1: board/25G83 guard rejected; proxy only\n");
++        printf("J613 Stage 1: board/25G83 guard rejected (needs J613 or J615, 26.6.2); proxy only\n");
+         goto proxy_fallback;
+     }
++    if (!strcmp(target, "J615"))
++        printf("J613 Stage 1: J615 admitted (EXPERIMENTAL)\n");
+     /* A factory or invalid configuration is a proxy-only image: no payload scan. */
+     if (!stage1_config_target())
+         goto proxy_fallback;
+@@ -174,7 +183,8 @@ proxy_fallback:
+ #ifdef J613_ESP_STAGE1
+     /* Shown on the panel: this is where a user without a USB host ends up. */
+     printf("\nJ613 Stage 1: could not start Linux from the EFI partition.\n"
+-           "  Needs: MacBook Air 13\" M3 (J613), this volume's macOS exactly 26.6.2,\n"
++           "  Needs: MacBook Air M3 (13\" J613; 15\" J615 experimental), this volume's\n"
++           "  macOS exactly 26.6.2,\n"
+            "  and the stage-2 file named in this stage 1 (fill_stage1_config.py --check).\n"
+            "  Hold the power button to shut down, then hold it again to choose another system.\n");
+ #endif
+diff --git a/tools/j613-stage1/build.sh b/tools/j613-stage1/build.sh
+index 064c790..7624dac 100755
+--- a/tools/j613-stage1/build.sh
++++ b/tools/j613-stage1/build.sh
+@@ -101,7 +101,7 @@ Path(manifest).write_text(json.dumps(dict(
+     build="make RELEASE=1 USE_CLANG=1 CHAINLOADING=1 J613_ESP_STAGE1=1",
+     toolchain=dict(rustc=rustc, clang=clang, lld=lld),
+     configuration="factory (proxy-only); fill with tools/j613-stage1/fill_stage1_config.py (default window 0)",
+-    guard="T8122 + ADT target-type J613 + OS firmware 26.6.2, else proxy only"), indent=2) + "\n")
++    guard="T8122 + ADT target-type J613 or J615 (J615 experimental) + OS firmware 26.6.2, else proxy only"), indent=2) + "\n")
+ PY
+ (cd "$out" && sha256sum "$(basename "$bin")" > SHA256SUMS 2>/dev/null || shasum -a 256 "$(basename "$bin")" > SHA256SUMS)
+ cat "$out/manifest.json"
+-- 
+2.54.0 (Apple Git-157)
+

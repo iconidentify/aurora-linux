@@ -1,0 +1,234 @@
+From 7a5c3a3565ffe56795d48bacce26e5251eb805dd Mon Sep 17 00:00:00 2001
+From: Satya Benson <satya@benson.earth>
+Date: Fri, 9 Oct 2026 18:25:17 -0400
+Subject: [PATCH 59/60] kboot: admit the J615 on the 25G83 profile behind an
+ explicit opt-in
+
+Apple's macOS 26.6.2 (25G83) restore image gives the J613 and the J615
+one DCP image, one PMP image and one GPU image, and the J615's ADT dcp,
+disp0, pmp, sgx and gfx-asc nodes equal the J613's but for phandles
+(display clock IDs 345/416, same DCP firmware UUID C042E95C-...-6FDD).
+Let the 25G83 path take a J615, experimentally:
+
+- payload_profile_rank() ranks a J615 25G83 tree like the J613's on a
+  26.6.2 boot. Selecting it hands nothing over by itself.
+- The 25G83 display handoff (dcp_soc_j613_25g83) and GPU handoff
+  (dt_set_gpu_t8122_26) take a J613 as before, and a J615 only with
+  chosen.asahi,j615-25g83-experimental=1 (t8122_25g83_board()). Without
+  it the J615 keeps the boot framebuffer and the GPU memory is only
+  reserved, as on any refused handoff.
+
+Every other gate (OS firmware 26.6.2, pinned DCP UUID, ADT clock IDs,
+DART and segment checks, GPU ADT regions, asahi,t8122-gpu=1) is
+unchanged. Not booted on a J615.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ src/kboot_display_handoff.c  | 14 ++++++++++++--
+ src/kboot_gpu26.c            | 19 +++++++++++++------
+ src/payload_profile.h        |  7 ++++++-
+ src/t8122_25g83.h            | 31 +++++++++++++++++++++++++++++++
+ tests/payload_profile_host.c | 23 ++++++++++++++++++++++-
+ 5 files changed, 84 insertions(+), 10 deletions(-)
+ create mode 100644 src/t8122_25g83.h
+
+diff --git a/src/kboot_display_handoff.c b/src/kboot_display_handoff.c
+index 6210cb1..c15f541 100644
+--- a/src/kboot_display_handoff.c
++++ b/src/kboot_display_handoff.c
+@@ -74,6 +74,7 @@
+ #include "pmgr.h"
+ #include "soc.h"
+ #include "string.h"
++#include "t8122_25g83.h"
+ #include "utils.h"
+ 
+ #include "libfdt/libfdt.h"
+@@ -279,14 +280,20 @@ static const struct dcp_soc dcp_soc_t8122 = {
+     .pmgr_disp_cpu = 0x2d0710000UL,
+ };
+ 
+-static const char *const dcp_boards_j613[] = {"apple,j613", NULL};
++/*
++ * The J615 runs the same 25G83 DCP image (one Firmware/dcp/t8122dcp.im4p for
++ * both boards in the 26.6.2 restore image) with the same display ADT; it is
++ * experimental and needs chosen.asahi,j615-25g83-experimental=1 as well
++ * (dcp6_check_dt).
++ */
++static const char *const dcp_boards_j613[] = {"apple,j613", "apple,j615", NULL};
+ 
+ static const struct dcp_soc dcp_soc_j613_25g83 = {
+     .name = "J613-25G83",
+     .chip = T8122,
+     .compat = "apple,t8122",
+     .boards = dcp_boards_j613,
+-    .boards_desc = "J613",
++    .boards_desc = "J613/J615",
+     .dcp_compat = "apple,t8122-dcp",
+     .disp_compat = "apple,t8122-display-subsystem",
+     .marker = "apple,j613-25g83-mapping-handoff",
+@@ -1898,6 +1905,9 @@ static int dcp6_check_dt(void *dt, struct dcp6_dt *n)
+ 
+     if (!dcp6_board_ok(dt))
+         bail("not a %s device tree\n", soc->boards_desc);
++    if (soc->fw25 && !t8122_25g83_board(dt))
++        bail("J615 25G83 is experimental: no display handoff without chosen."
++             T8122_25G83_J615_OPT_IN "=1\n");
+ 
+     char p1[sizeof(n->piodma)], p2[sizeof(n->piodma)];
+     int dcp = dcp6_alias_path(dt, "dcp", n->dcp, sizeof(n->dcp));
+diff --git a/src/kboot_gpu26.c b/src/kboot_gpu26.c
+index 83a630a..419cc4c 100644
+--- a/src/kboot_gpu26.c
++++ b/src/kboot_gpu26.c
+@@ -5,6 +5,7 @@
+ #include "malloc.h"
+ #include "soc.h"
+ #include "string.h"
++#include "t8122_25g83.h"
+ #include "utils.h"
+ #include "libfdt/libfdt.h"
+ #define bail(...) do { printf(__VA_ARGS__); return -1; } while (0)
+@@ -25,9 +26,10 @@
+  * apple,firmware-segment-vas and apple,firmware-segment-flags. The
+  * publication runs on a copy of the FDT and is committed whole or not at all.
+  *
+- * The GPU node stays disabled unless the board is J613 and the node carries
+- * the exact profile and /chosen asahi,t8122-gpu=1 opt-in. Linux
+- * admits the loaded firmware before starting it. This never fails the boot.
++ * The GPU node stays disabled unless the board is J613 (or, experimentally, a
++ * J615 with chosen.asahi,j615-25g83-experimental=1) and the node carries the
++ * exact profile and /chosen asahi,t8122-gpu=1 opt-in. Linux admits the loaded
++ * firmware before starting it. This never fails the boot.
+  */
+ #define T8122_GPU_REGIONS 6
+ #define T8122_GPU_UAT     4
+@@ -399,11 +401,16 @@ static int t8122_gpu_publish(void *dt, void *arg)
+         return -1;
+     const char *intent = chosen < 0 ? NULL :
+         fdt_getprop(dt, chosen, "asahi,t8122-gpu", &len);
+-    bool enable = !fdt_node_check_compatible(dt, 0, "apple,j613") &&
+-                  os_firmware.version == V26_6_2 && intent && len == 2 &&
++    bool board = t8122_25g83_board(dt);
++    bool enable = board && os_firmware.version == V26_6_2 && intent && len == 2 &&
+                   intent[0] == '1' && intent[1] == 0;
+-    if (os_firmware.version != V26_6_2 || fdt_node_check_compatible(dt, 0, "apple,j613"))
++    if (!board && !fdt_node_check_compatible(dt, 0, "apple,j615"))
++        printf("FDT: GPU: J615 25G83 is experimental: no handoff without chosen."
++               T8122_25G83_J615_OPT_IN "=1\n");
++    if (os_firmware.version != V26_6_2 || !board)
+         return -1;
++    if (fdt_node_check_compatible(dt, 0, "apple,j615") == 0)
++        printf("FDT: GPU: J615 25G83 handoff (EXPERIMENTAL, J613 firmware profile)\n");
+     int mailbox = -1;
+     if (enable) {
+         const fdt32_t *mbox = fdt_getprop(dt, gpu, "mboxes", &len);
+diff --git a/src/payload_profile.h b/src/payload_profile.h
+index 272b5ed..7181709 100644
+--- a/src/payload_profile.h
++++ b/src/payload_profile.h
+@@ -6,6 +6,10 @@
+ 
+ /* Legacy is a framebuffer fallback on 26.x. An exact experimental DT wins
+  * regardless of archive order; other firmware never selects that profile.
++ * The J615 25G83 tree (experimental) ranks like the J613's: selecting it
++ * hands nothing over by itself, the display and GPU handoffs also need
++ * chosen.asahi,j615-25g83-experimental=1 (t8122_25g83.h), which m1n1.conf
++ * supplies only after the device trees have been ranked.
+  */
+ static inline int payload_profile_rank(const void *dt, bool os_26_6_2)
+ {
+@@ -15,7 +19,8 @@ static inline int payload_profile_rank(const void *dt, bool os_26_6_2)
+     if (!profile)
+         return 1;
+     if (len != 4 || fdt32_ld(profile) != 1 || !os_26_6_2 ||
+-        fdt_node_check_compatible(dt, 0, "apple,j613"))
++        (fdt_node_check_compatible(dt, 0, "apple,j613") &&
++         fdt_node_check_compatible(dt, 0, "apple,j615")))
+         return 0;
+     const fdt32_t *compat = fdt_getprop(dt, dcp, "apple,firmware-compat", &len);
+     return compat && len == 12 && fdt32_ld(compat) == 26 &&
+diff --git a/src/t8122_25g83.h b/src/t8122_25g83.h
+new file mode 100644
+index 0000000..6b3ea59
+--- /dev/null
++++ b/src/t8122_25g83.h
+@@ -0,0 +1,31 @@
++/* SPDX-License-Identifier: MIT */
++#ifndef T8122_25G83_H
++#define T8122_25G83_H
++
++#include <stdbool.h>
++#include "libfdt/libfdt.h"
++
++/*
++ * The J615 (M3 Air 15") runs the J613's 25G83 DCP, PMP and GPU images: Apple's
++ * 26.6.2 restore image has one entry for each, for both boards, and the J615's
++ * ADT display, PMP and GPU nodes equal the J613's but for phandles. It is
++ * still EXPERIMENTAL, not booted on a J615, so the display and GPU handoffs
++ * take a J615 only when its owner set chosen.asahi,j615-25g83-experimental=1
++ * in m1n1.conf. Linux checks the same switch again.
++ */
++#define T8122_25G83_J615_OPT_IN "asahi,j615-25g83-experimental"
++
++/* A J613, or a J615 with the opt-in. `dt` has /chosen set already. */
++static inline bool t8122_25g83_board(const void *dt)
++{
++    if (!fdt_node_check_compatible(dt, 0, "apple,j613"))
++        return true;
++    if (fdt_node_check_compatible(dt, 0, "apple,j615"))
++        return false;
++    int chosen = fdt_path_offset(dt, "/chosen"), len = 0;
++    const char *optin =
++        chosen < 0 ? NULL : fdt_getprop(dt, chosen, T8122_25G83_J615_OPT_IN, &len);
++    return optin && len == 2 && optin[0] == '1' && !optin[1];
++}
++
++#endif
+diff --git a/tests/payload_profile_host.c b/tests/payload_profile_host.c
+index a32f528..411cc43 100644
+--- a/tests/payload_profile_host.c
++++ b/tests/payload_profile_host.c
+@@ -3,9 +3,10 @@
+ #include <stddef.h>
+ #include <assert.h>
+ #include "payload_profile.h"
++#include "t8122_25g83.h"
+ int main(void)
+ {
+-    char legacy[2048], profile[2048];
++    char legacy[2048], profile[4096];
+     assert(!fdt_create_empty_tree(legacy, sizeof(legacy)));
+     assert(!fdt_setprop_string(legacy, 0, "compatible", "apple,j613"));
+     assert(!fdt_open_into(legacy, profile, sizeof(profile)));
+@@ -37,7 +38,27 @@ int main(void)
+     assert(!fdt_setprop_u32(profile, dcp, "apple,j613-25g83-profile", 2));
+     assert(payload_profile_rank(profile, true) == 0);
+     assert(!fdt_setprop_u32(profile, dcp, "apple,j613-25g83-profile", 1));
++    /* The J615 25G83 tree (experimental) ranks like the J613's; other boards do not. */
+     assert(!fdt_setprop_string(profile, 0, "compatible", "apple,j615"));
++    assert(payload_profile_rank(profile, true) == 2);
++    assert(payload_profile_rank(profile, false) == 0);
++    assert(!fdt_setprop_string(profile, 0, "compatible", "apple,j504"));
+     assert(payload_profile_rank(profile, true) == 0);
++    /* Handoffs: a J613, or a J615 only with chosen.asahi,j615-25g83-experimental=1. */
++    assert(!fdt_setprop_string(profile, 0, "compatible", "apple,j613"));
++    assert(t8122_25g83_board(profile));
++    assert(!fdt_setprop_string(profile, 0, "compatible", "apple,j615"));
++    assert(!t8122_25g83_board(profile));
++    int chosen = fdt_add_subnode(profile, 0, "chosen");
++    assert(chosen >= 0);
++    assert(!t8122_25g83_board(profile));
++    assert(!fdt_setprop_string(profile, chosen, T8122_25G83_J615_OPT_IN, "0"));
++    assert(!t8122_25g83_board(profile));
++    assert(!fdt_setprop_string(profile, chosen, T8122_25G83_J615_OPT_IN, "11"));
++    assert(!t8122_25g83_board(profile));
++    assert(!fdt_setprop_string(profile, chosen, T8122_25G83_J615_OPT_IN, "1"));
++    assert(t8122_25g83_board(profile));
++    assert(!fdt_setprop_string(profile, 0, "compatible", "apple,j504"));
++    assert(!t8122_25g83_board(profile));
+     return 0;
+ }
+-- 
+2.54.0 (Apple Git-157)
+
