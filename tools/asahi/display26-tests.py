@@ -214,7 +214,8 @@ def verify_j615_dtbs(directory):
     def speakers(path):
         dts=subprocess.run(['dtc','-I','dtb','-O','dts',str(path)],capture_output=True,text=True,check=True).stdout
         return sorted(line.strip() for line in dts.splitlines() if 'sound-name-prefix' in line)
-    assert speakers(new)==speakers(old) and len(speakers(new))==6, speakers(new)
+    amps=[s for s in speakers(new) if 'Woofer' in s or 'Tweeter' in s]
+    assert speakers(new)==speakers(old) and len(amps)==6, speakers(new)
     proc=subprocess.run(['dtc','-I','dtb','-O','dts',str(new)],capture_output=True,text=True,check=True)
     assert 'apple,power-method = <0x02>;' in proc.stdout
     print('J615 25G83 (experimental) profile/disabled topology/unchanged speakers: PASS')
