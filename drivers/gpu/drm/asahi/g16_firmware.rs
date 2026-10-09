@@ -234,10 +234,22 @@ pub(crate) fn identify_loaded(
             unsafe { bindings::sha256(canonical.as_ptr(), canonical.len(), file.as_mut_ptr()) };
         }
         if file == IMAGE_FILE_TEXT_SHA256 {
+            // J615 (experimental): iBoot.j615 may write other GPU setup
+            // records than iBoot.j613. A tester can accept them for a boot.
+            if board.name == "J615" && *crate::module_parameters::g16_j615_setup_records.value() == 1 {
+                dev_warn!(
+                    pdev.as_ref(),
+                    "G16G: {}: the 26.6.2 GPU image with this Mac's own iBoot-written values ({:02x?}), accepted by asahi.g16_j615_setup_records=1\n",
+                    board.name, digest
+                );
+                dev_info!(pdev.as_ref(), "G16G: {} firmware identified ({})\n", board.name, "RTKit-3255.160.4.release");
+                return Ok(Firmware { resources, board });
+            }
+            let retry = if board.name == "J615" { " (asahi.g16_j615_setup_records=1 accepts them)" } else { "" };
             dev_err!(
                 pdev.as_ref(),
-                "G16G: {}: the 26.6.2 GPU image, but iBoot wrote other values into it than on the Mac it was pinned on (normalized SHA-256 {:02x?}); not started, please report this line\n",
-                board.name, digest
+                "G16G: {}: the 26.6.2 GPU image, but iBoot wrote other values into it than on the Mac it was pinned on (normalized SHA-256 {:02x?}); not started, please report this line{}\n",
+                board.name, digest, retry
             );
         } else {
             dev_err!(
