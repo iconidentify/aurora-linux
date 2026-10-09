@@ -6140,6 +6140,30 @@ m3_persistent_preflight() {
   for s in chosen.asahi,t8122-gpu=1 chosen.asahi,t8122-dcp=1; do
     ! m3_air_switch_off "$s" || die "persistent GPU conflicts with an explicit owner switch-off: $s"
   done
+  m3_esp_space_check
+}
+
+# The persistent route writes to the ESP: a kept copy of boot.bin (keep_bootbin_on_esp)
+# next to the rebuilt one and, on Limine, the retained GPU-off UKI and the new
+# linux-aurora UKI. Asahi ESPs are 500 MB and often hold snapshot UKIs too; refuse
+# before anything changes rather than fail mid-transaction with ENOSPC. GRUB keeps its
+# kernels in /boot, which boot_space checks.
+m3_esp_space_check() {
+  local target esp uki=0 bootbin need free
+  target=$(esp_bootbin) || return 0
+  esp=${target%/m1n1/boot.bin}
+  bootbin=$($sudo stat -c %s "$target")
+  if [[ $(boot_chain) == limine ]]; then
+    # The largest UKI there stands for the running kernel's; 100 MB when there is none.
+    uki=$($sudo find "$esp" -maxdepth 3 -name '*.efi' -size +8M -printf '%s\n' 2>/dev/null | sort -n | tail -1) || true
+    uki=${uki:-100000000}
+  fi
+  need=$(( (2 * uki + 2 * bootbin) / 1048576 + 16 ))
+  free=$($sudo df -m --output=avail "$esp" 2>/dev/null | tail -1 | tr -d ' ') || free=""
+  [[ $free =~ ^[0-9]+$ ]] || { warn "could not read the free space on $esp; not checking it"; return 0; }
+  ((free >= need)) || die "the EFI partition ($esp) has ${free} MB free and the persistent GPU route needs
+    about ${need} MB (a kept boot.bin, the retained GPU-off kernel and the new one). Free space there
+    first (old snapshot UKIs, limine_history). Nothing was installed."
 }
 
 m3_install_cleanup() {

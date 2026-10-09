@@ -872,6 +872,46 @@ uninstall_all
         self.assertNotIn("boot-profile", self.log())
         self.assertNotIn("aurora-sep-fallback-modules", self.log())
 
+    # EFI partition space before the persistent GPU route
+
+    def esp_check(self, avail, chain="limine"):
+        return self.run_sh(f"""
+boot_chain() {{ echo {chain}; }}
+df() {{ printf 'Avail\\n%s\\n' {avail}; }}
+m3_esp_space_check
+""", check=False)
+
+    def test_a_full_esp_stops_the_persistent_route(self):
+        self.mac("j613")
+        uki = self.tmp / "esp/EFI/Linux/omarchy_linux-aurora.efi"
+        uki.parent.mkdir(parents=True)
+        with uki.open("wb") as f:
+            f.truncate(60 * 1048576)
+        # Twice the 60 MB UKI (retained and new), twice boot.bin, and 16 MB.
+        proc = self.esp_check(135)
+        self.assertNotEqual(proc.returncode, 0)
+        err = " ".join(proc.stderr.split())
+        self.assertIn(f"The EFI partition ({self.tmp}/esp) has 135 MB free".lower(), err.lower())
+        self.assertIn("about 136 MB", err)
+        self.assertIn("Nothing was installed", err)
+        self.assertEqual(self.esp_check(136).returncode, 0)
+
+    def test_an_esp_without_a_uki_assumes_a_100_mb_kernel(self):
+        self.mac("j613")
+        self.assertNotEqual(self.esp_check(205).returncode, 0)
+        self.assertEqual(self.esp_check(206).returncode, 0)
+
+    def test_grub_needs_esp_room_for_boot_bin_only(self):
+        self.mac("j613")
+        self.assertEqual(self.esp_check(16, chain="grub").returncode, 0)
+        self.assertNotEqual(self.esp_check(15, chain="grub").returncode, 0)
+
+    def test_unreadable_free_space_is_not_a_refusal(self):
+        self.mac("j613")
+        proc = self.esp_check("''")
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("could not read the free space", proc.stderr)
+
 
 if __name__ == "__main__":
     unittest.main()
