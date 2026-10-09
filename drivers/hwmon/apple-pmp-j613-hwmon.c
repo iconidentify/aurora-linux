@@ -1,5 +1,10 @@
 // SPDX-License-Identifier: GPL-2.0-only OR MIT
-/* Read-only J613/25G83 PMP telemetry. No cooling or firmware writes. */
+/*
+ * Read-only J613/25G83 PMP telemetry. No cooling or firmware writes.
+ * J615 (experimental): the same PMP image and the same temp-sensor list in its
+ * 26.6.2 device tree; it gets here only after the 25G83 display handoff, which
+ * on a J615 needs the owner's opt-in, copied the PMP values (tunable UUID).
+ */
 #include <linux/hwmon.h>
 #include <linux/io.h>
 #include <linux/module.h>
@@ -230,7 +235,8 @@ static int __init pmp_j613_init(void)
 	int index;
 	int ret;
 
-	if (!of_machine_is_compatible("apple,j613") ||
+	if ((!of_machine_is_compatible("apple,j613") &&
+	     !of_machine_is_compatible("apple,j615")) ||
 	    !of_machine_is_compatible("apple,t8122"))
 		return -ENODEV;
 	node = of_find_node_by_path("/soc/pmp@2d0500000");
