@@ -24,14 +24,14 @@ PREFIX=r'''
 #define ETIMEDOUT 110
 #define PMP_REPORT_READY 1
 typedef uint64_t u64;typedef uint32_t u32;typedef uint16_t u16;typedef uint8_t u8;
-struct device_node{const char *compatible;bool available;unsigned phandle;int refs;struct device_node *target,*report,*child;};
+struct device_node{const char *compatible,*full_name;bool available,has_reg;unsigned phandle;u32 reg;int refs;struct device_node *target,*report,*child,*sibling;};
 struct device{struct device_node *of_node;int refs;};
 struct platform_device{struct device dev;};
 struct apple_pmp_report_offsets{unsigned status;};
 struct apple_pmp_report{void *base;struct apple_pmp_report_offsets *offsets;};
 struct of_changeset{int added;};struct gate_soc{int chip;};
 static const struct gate_soc gate_t8122={8122},gate_t6030={6030};static const struct gate_soc *gate_soc;
-static struct device_node gpu,pmp,other,report14,entry7,report25;
+static struct device_node gpu,pmp,other,report14,entry7,entry17,report25;
 static struct platform_device report_device;static struct device supplier;
 static struct apple_pmp_report rep;static struct apple_pmp_report_offsets offsets;
 static struct device *pmp_device=&supplier;static const void *pmp_data=(void*)1;
@@ -45,7 +45,12 @@ static bool of_device_is_compatible(struct device_node*n,const char*s){return n 
 static struct device_node *of_find_compatible_node(void*a,void*b,const char*s){assert(!a&&!b);if(!strcmp(s,"apple,agx-t8122"))return missing_gpu?NULL:ref(&gpu);assert(!strcmp(s,"apple,t8122-pmp-v2-report"));return missing_report?NULL:ref(&report14);}
 static bool of_device_is_available(struct device_node*n){return n->available;}
 static struct device_node *of_parse_phandle(struct device_node*n,const char*s,int i){assert(!i);if(!strcmp(s,"apple,pmp"))return ref(n->target);assert(!strcmp(s,"apple,pmp-report"));return ref(n->report);}
-static struct device_node *of_get_child_by_name(struct device_node*n,const char*s){assert(!strcmp(s,"report@7"));return ref(n->child);}
+/* The kernel's child walk and name match: of_node_name_eq() ignores the unit address. */
+static struct device_node *of_get_next_child(struct device_node*n,struct device_node*prev){struct device_node*c=prev?prev->sibling:n->child;of_node_put(prev);return ref(c);}
+#define for_each_child_of_node(n,c) for(c=of_get_next_child(n,NULL);c;c=of_get_next_child(n,c))
+static bool of_node_name_eq(const struct device_node*n,const char*s){const char*at=strchr(n->full_name,'@');size_t len=at?(size_t)(at-n->full_name):strlen(n->full_name);return strlen(s)==len&&!strncmp(n->full_name,s,len);}
+static struct device_node *of_get_child_by_name(struct device_node*n,const char*s){struct device_node*c;for_each_child_of_node(n,c)if(of_node_name_eq(c,s))break;return c;}
+static int of_property_read_u32(struct device_node*n,const char*s,u32*v){assert(!strcmp(s,"reg"));if(!n->has_reg)return -EINVAL;*v=n->reg;return 0;}
 static int of_changeset_add_prop_u32(struct of_changeset*c,struct device_node*n,const char*s,u32 v){assert(n==&gpu&&!strcmp(s,"apple,pmp")&&v==pmp.phandle);add_calls++;if(!add_result)c->added++;return add_result;}
 static unsigned long msecs_to_jiffies(unsigned ms){return ms;}
 static int apple_pmp_report_wait_ready(struct device_node*n,unsigned long t){assert(n==&entry7&&t==5000);ready_calls++;return ready_result;}
@@ -65,15 +70,16 @@ static int apple_pmp_send_power_command(const void*d,u8 op,u16 id,u32 enabled){a
 static void reset(void){
  gpu=(struct device_node){.compatible="apple,agx-t8122",.available=true,.phandle=1};
  pmp=(struct device_node){.compatible="apple,t8122-pmp-v2",.phandle=2};other=(struct device_node){.compatible="apple,other",.phandle=3};
- entry7=(struct device_node){.compatible="apple,t6000-pmp-v2-report-entry",.phandle=4};
- report14=(struct device_node){.compatible="apple,t8122-pmp-v2-report",.target=&pmp,.child=&entry7};
+ entry7=(struct device_node){.compatible="apple,t6000-pmp-v2-report-entry",.full_name="report@7",.has_reg=true,.reg=7,.phandle=4};
+ entry17=(struct device_node){.compatible="apple,t6000-pmp-v2-report-entry",.full_name="report@11",.has_reg=true,.reg=17,.phandle=5,.sibling=&entry7};
+ report14=(struct device_node){.compatible="apple,t8122-pmp-v2-report",.target=&pmp,.child=&entry17};
  report25=(struct device_node){.compatible="apple,j613-25g83-pmp-report"};
  supplier=(struct device){.of_node=&pmp};report_device=(struct platform_device){0};
  offsets=(struct apple_pmp_report_offsets){.status=0};rep=(struct apple_pmp_report){.base=&ptd_status,.offsets=&offsets};
  gate_soc=&gate_t8122;machine8122=true;missing_gpu=missing_report=missing_native_device=false;lockable=bound=true;
  ready_result=add_result=power_result=ready_calls=add_calls=poll_calls=power_calls=0;ptd_status=1;assert(!lock_depth);
 }
-static void balanced(void){assert(!gpu.refs&&!pmp.refs&&!other.refs&&!report14.refs&&!entry7.refs&&!report25.refs&&!report_device.dev.refs&&!lock_depth);}
+static void balanced(void){assert(!gpu.refs&&!pmp.refs&&!other.refs&&!report14.refs&&!entry7.refs&&!entry17.refs&&!report25.refs&&!report_device.dev.refs&&!lock_depth);}
 '''
 CONTROLS=r'''
 int main(void){
@@ -93,6 +99,11 @@ int main(void){
  reset();power_result=-ETIMEDOUT;assert(apple_pmp_set_device_power(0xf,5,1)==-ETIMEDOUT&&power_calls==1);balanced();
  reset();report14.target=&other;assert(apple_pmp_set_device_power(0xf,5,1)==-ENODEV&&!power_calls&&!ready_calls);balanced();
  reset();report14.child=NULL;assert(apple_pmp_set_device_power(0xf,5,1)==-ENODEV&&!power_calls);balanced();
+ reset();report14.child=&entry7;entry7.sibling=&entry17;assert(apple_pmp_set_device_power(0xf,5,1)==0&&ready_calls==1&&power_calls==1);balanced();
+ reset();entry17.sibling=NULL;assert(apple_pmp_set_device_power(0xf,5,1)==-ENODEV&&!ready_calls&&!power_calls);balanced();
+ reset();entry7.reg=8;assert(apple_pmp_set_device_power(0xf,5,1)==-ENODEV&&!ready_calls&&!power_calls);balanced();
+ reset();entry7.has_reg=false;assert(apple_pmp_set_device_power(0xf,5,1)==-ENODEV&&!ready_calls&&!power_calls);balanced();
+ reset();entry7.compatible="apple,other";assert(apple_pmp_set_device_power(0xf,5,1)==-ENODEV&&!ready_calls&&!power_calls);balanced();
  reset();missing_report=true;assert(apple_pmp_set_device_power(0xf,5,1)==-ENODEV&&!power_calls);balanced();
  reset();machine8122=false;assert(apple_pmp_set_device_power(0xf,5,1)==-ENODEV&&!power_calls);balanced();
  reset();pmp.compatible="apple,t6030-pmp-v2";assert(apple_pmp_set_device_power(0xf,5,1)==-ENODEV&&!power_calls);balanced();
@@ -113,7 +124,8 @@ def main():
  parser=argparse.ArgumentParser(description=__doc__);parser.add_argument('--old-source',type=Path);args=parser.parse_args()
  gate=(ROOT/'drivers/soc/apple/t6030-display-gate.c').read_text();report=(ROOT/'drivers/pmdomain/apple/pmp-report.c').read_text();bridge=(ROOT/'drivers/soc/apple/pmp-export.c').read_text()
  gpu=function(gate,'static int __init gate_t8122_gpu_pmp_link(')
- ready14=function(report,'static int apple_pmp_report_wait_t8122_14(')
+ entry=function(report,'static struct device_node *apple_pmp_report_entry(')
+ ready14=entry+function(report,'static int apple_pmp_report_wait_t8122_14(')
  native=function(report,'int apple_pmp_report_wait_supplier_ready(')
  send=function(bridge,'int apple_pmp_set_device_power(')
  apply=function(gate,'static int __init gate_pmp_apply(')
@@ -124,5 +136,6 @@ def main():
    old=function(args.old_source.read_text(),'int apple_pmp_report_wait_supplier_ready(')
    r=run(PREFIX+gpu+ready14+old+send+CONTROLS,td/'old.c');assert r.returncode!=0;print('PASS original native25-only supplier path rejects current14 positive control')
   mutant=code.replace('ret = apple_pmp_report_wait_supplier_ready(pmp_device, 5000);','ret = pmp_device ? 0 : -ENODEV;');assert mutant!=code;r=run(mutant,td/'no-ready.c');assert r.returncode!=0;print('PASS bypassed-readiness mutant fails current14 control')
+  mutant=code.replace('entry = apple_pmp_report_entry(report, 7);','entry = of_get_child_by_name(report, "report@7");');assert mutant!=code;r=run(mutant,td/'child-by-name.c');assert r.returncode!=0;print('PASS of_get_child_by_name("report@7") mutant (2026.10.09.2) fails current14 control')
  print('Compiled production functions use mocked OF, devices, locks and PTD; separate entry-ready controls cover startup/removal ownership.')
 if __name__=='__main__':main()
