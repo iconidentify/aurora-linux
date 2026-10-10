@@ -33,6 +33,7 @@ typedef uint8_t u8; typedef uint16_t u16; typedef uint32_t u32; typedef uint64_t
 ''')
         write(tmp, 'linux/kconfig.h', '#define IS_ENABLED(x) 0\n')
         write(tmp, 'linux/string.h', '#include <string.h>\n')
+        write(tmp, 'linux/of.h', '#pragma once\n#include <stdbool.h>\nstatic inline bool of_machine_is_compatible(const char *c) { (void)c; return false; }\n')
         write(tmp, 'linux/bitops.h', '#pragma once\n#define BIT(x) (1U << (x))\nstatic int fls(unsigned x){return x?32-__builtin_clz(x):0;}\n')
         write(tmp, 'linux/bits.h', '#include "bitops.h"\n#define GENMASK_ULL(h,l) ((~0ULL << (l)) & (~0ULL >> (63-(h))))\n')
         write(tmp, 'linux/unaligned.h', '''#include <string.h>
