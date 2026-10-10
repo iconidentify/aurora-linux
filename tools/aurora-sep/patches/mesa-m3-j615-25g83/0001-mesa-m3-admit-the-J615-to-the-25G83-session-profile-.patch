@@ -1,0 +1,222 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Satya Benson <satya@benson.earth>
+Date: Fri, 9 Oct 2026 20:21:13 -0400
+Subject: [PATCH] mesa-m3: admit the J615 to the 25G83 session profile,
+ experimentally
+
+The 26.6.2 (25G83) restore image gives the J613 and the J615 one DCP, one
+PMP and one GPU image, and the J615's ADT GPU, display and PMP nodes equal
+the J613's but for phandles. mesa-m3-abi-check already admits by chip and
+HAL identity only (T8122 G15G C0, HAL200, USC3), and the native libgallium
+checks the same; the session hook was the only board check, so a J615 with
+the experimental profile stopped at "profile-mismatch native profile
+requires J613/T8122".
+
+The hook now takes a J615 on the j613-25g83-hal200 profile only when
+/chosen asahi,j615-25g83-experimental is exactly the string "1", the switch
+m1n1 copies from m1n1.conf and that m1n1's display and GPU handoffs and the
+kernel also require. Without it a J615 gets its own profile-mismatch
+reason; every other check (opt-in file, exact token, firmware-compat
+26.6.2, the GPU handoff marker, runtime ABI, GL-only capability marker) is
+unchanged, as is the J613 path. The active detail names the J615.
+
+The package lists the boards the hook admits in
+/opt/mesa-m3/share/mesa-m3/native25-boards (j613, j615-experimental):
+stack assembly and the installer require it before they offer a J615 the
+profile. pkgrel 4.
+
+tests/test-session-env.sh: 155 ok (was 137) under sh and bash; the other
+recipe tests are unchanged.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ NATIVE-PROFILE            |  2 ++
+ PKGBUILD                  | 10 +++++++--
+ mesa-m3-session-env       | 38 ++++++++++++++++++++++++++++------
+ tests/test-session-env.sh | 43 ++++++++++++++++++++++++++++++++++++++-
+ 4 files changed, 84 insertions(+), 9 deletions(-)
+
+diff --git a/NATIVE-PROFILE b/NATIVE-PROFILE
+index c772ef4..fd9a24a 100644
+--- a/NATIVE-PROFILE
++++ b/NATIVE-PROFILE
+@@ -3,3 +3,5 @@ J613 firmware 26.6.2 uses experimental native OpenGL in /opt/mesa-m3/25g83. Vulk
+ Persistent selection requires /etc/mesa-m3/t8122-gpu-experiment and the exact /etc/mesa-m3/t8122-profile token j613-25g83-hal200. The native capability marker is j613-25g83-gl-only. The loader also checks same-boot firmware and GPU ABI identity.
+ 
+ Native MRT colour clears use per-target write masks. Background reloads preserve initialized attachments while undefined attachments may reload allocated storage.
++
++The J615 (15-inch) runs the same 25G83 DCP, PMP and GPU images and uses this profile only experimentally: the session hook admits a J615 with the same token, firmware and ABI checks plus /chosen asahi,j615-25g83-experimental="1", which m1n1 and the kernel also require. The package lists the admitted boards in /opt/mesa-m3/share/mesa-m3/native25-boards (j613, j615-experimental).
+diff --git a/PKGBUILD b/PKGBUILD
+index 878c47b..3c09545 100644
+--- a/PKGBUILD
++++ b/PKGBUILD
+@@ -3,12 +3,14 @@
+ # The J613 25G83 profile uses /opt/mesa-m3/25g83 for native GL only; its
+ # Vulkan directory is empty. Selection requires persistent administrator intent,
+ # the exact j613-25g83-hal200 token, firmware26.6.2 handoff and runtime HAL200/USC3.
++# The J615 shares that profile experimentally: the session hook admits it only
++# with /chosen asahi,j615-25g83-experimental="1" (share/mesa-m3/native25-boards).
+ # The package builds both sources sequentially and checks compiler definitions,
+ # generated kernels, queue sandbox behavior, TLS loading and native MRT clears.
+ # No profile selection substitutes another Mac's firmware or calibration.
+ pkgname=mesa-m3
+ pkgver=26.1.4.m3.2
+-pkgrel=3
++pkgrel=4
+ _commit=7ff89a4da387bd561b78efd5f09c98ca8ae18538
+ pkgdesc="Mesa in /opt/mesa-m3 for the M3 Pro (G15S) and M3 (G15G) GPUs; used by uwsm sessions on T6030, and on T8122 when opted in"
+ arch=('aarch64')
+@@ -82,7 +84,7 @@ sha256sums=('7ed24969985dce91f089d34dbe1c55cbcb8c95765e3e5bc0f268d27fbead2222'
+             '10abda78df16e650a77443f50cc46a15e418c42d4d9680c6a61616b232c9bdef'
+             '6c98fab6f9d70449bd7f5258c34eac773836908e060ce5bef86dc5b0ce595e61'
+             '826016665cd0424a614b67add921c0c79c3c698a4d104ea5712518449b75f27c'
+-            '7630e2b23ee7bfd6912ff9dd55700203f8faf9e97ee0000a300a03b08defa56a'
++            '27f4a1704394984c0a98b3cbf57aa0831fce457fd7989f713a46848b781b61e9'
+             '6144af8b2e0f04ea615e8c4149e69c45ac49e630c46b2a58f0d1095d977798b2'
+             '530948fc1a124de21c030a497e2ef5351742ba4ad4653484fe30fd1697ad7141'
+             '644cf4a5ab57b7badec75843e2899b68d41490c4851d6885227180d6090c25ea'
+@@ -342,6 +344,10 @@ package_mesa-m3() {
+   install -Dm644 mesa-m3-session-env "${pkgdir}${_prefix}/libexec/mesa-m3-session-env"
+   install -Dm755 mesa-m3-user-setup "${pkgdir}${_prefix}/libexec/mesa-m3-user-setup"
+   install -Dm644 user-setup.list "${pkgdir}${_prefix}/share/mesa-m3/user-setup.list"
++  # The boards whose 25G83 sessions the hook admits; installers and stack
++  # assembly require j615-experimental before they offer the J615 the profile.
++  grep -Fq 'asahi,j615-25g83-experimental' mesa-m3-session-env
++  printf 'j613\nj615-experimental\n' > "${pkgdir}${_prefix}/share/mesa-m3/native25-boards"
+   install -Dm644 50-mesa-m3 "${pkgdir}/usr/share/uwsm/env.d/50-mesa-m3"
+   install -Dm644 72-mesa-m3-render-node.rules "${pkgdir}/usr/lib/udev/rules.d/72-mesa-m3-render-node.rules"
+   install -Dm755 mesa-m3-session-confirm "${pkgdir}${_prefix}/libexec/mesa-m3-session-confirm"
+diff --git a/mesa-m3-session-env b/mesa-m3-session-env
+index ddd86f7..55257b1 100644
+--- a/mesa-m3-session-env
++++ b/mesa-m3-session-env
+@@ -153,10 +153,19 @@ mesa_m3_gate() {
+ 	if [ -n "$_mm3_requested" ] && [ "$_mm3_requested" != j613-25g83-hal200 ]; then
+ 		echo "profile-mismatch unknown T8122 profile $_mm3_requested"; return 1
+ 	fi
++	_mm3_note=
+ 	if [ "$_mm3_profile" = j613-25g83-hal200 ]; then
+-		if [ "$_mm3_soc" != t8122 ] || ! tr '\0' '\n' < "$_mm3_root/proc/device-tree/compatible" | grep -qx apple,j613; then
+-			echo "profile-mismatch native profile requires J613/T8122"; return 1
++		# One 25G83 firmware ABI profile: the J613's, and experimentally the
++		# J615's (same DCP, PMP and GPU images in the 26.6.2 restore image)
++		# when m1n1 and the kernel took the J615 switch.
++		_mm3_board=$(_mm3_25g83_board "$_mm3_root")
++		if [ "$_mm3_soc" != t8122 ] || [ -z "$_mm3_board" ]; then
++			echo "profile-mismatch native profile requires J613/T8122, or a J615 with chosen.asahi,j615-25g83-experimental=1"; return 1
+ 		fi
++		if [ "$_mm3_board" = j615-off ]; then
++			echo "profile-mismatch native profile on a J615 is experimental and requires chosen.asahi,j615-25g83-experimental=1 in m1n1.conf"; return 1
++		fi
++		[ "$_mm3_board" = j615 ] && _mm3_note=" (J615 on the 25G83 profile, experimental)"
+ 		if [ "$(od -An -v -tx1 "$_mm3_node/device/of_node/apple,firmware-compat" 2>/dev/null | tr -d ' \n')" != 0000001a0000000600000002 ] ||
+ 		   [ "$(od -An -v -tx1 "$_mm3_node/device/of_node/apple,j613-25g83-gpu-handoff" 2>/dev/null | tr -d ' \n')" != 00000001 ]; then
+ 			echo "profile-mismatch native profile requires exact firmware 26.6.2 and GPU handoff"; return 1
+@@ -293,9 +302,9 @@ mesa_m3_gate() {
+ 	fi
+ 
+ 	if [ "${_mm3_ign:-0}" -gt 0 ]; then
+-		echo "active $_mm3_name, render node /dev/dri/${_mm3_node##*/}, display $_mm3_dcp; session desktops ${XDG_CURRENT_DESKTOP:-unknown}; $_mm3_ign setting(s) not used by this session ignored, first: $_mm3_igd"
++		echo "active $_mm3_name$_mm3_note, render node /dev/dri/${_mm3_node##*/}, display $_mm3_dcp; session desktops ${XDG_CURRENT_DESKTOP:-unknown}; $_mm3_ign setting(s) not used by this session ignored, first: $_mm3_igd"
+ 	else
+-		echo "active $_mm3_name, render node /dev/dri/${_mm3_node##*/}, display $_mm3_dcp; session desktops ${XDG_CURRENT_DESKTOP:-unknown}"
++		echo "active $_mm3_name$_mm3_note, render node /dev/dri/${_mm3_node##*/}, display $_mm3_dcp; session desktops ${XDG_CURRENT_DESKTOP:-unknown}"
+ 	fi
+ 	return 0
+ }
+@@ -311,6 +320,23 @@ _mm3_soc_of() {
+ 	fi
+ }
+ 
++# _mm3_25g83_board ROOT: j613 on a J613; j615 on a J615 whose /chosen
++# asahi,j615-25g83-experimental is exactly the string "1" (m1n1 copies it from
++# m1n1.conf; m1n1's display and GPU handoffs and the kernel require the same);
++# j615-off on a J615 without it; nothing on any other board.
++_mm3_25g83_board() {
++	_mm3_dt=$(tr '\0' '\n' 2>/dev/null < "$1/proc/device-tree/compatible")
++	if printf '%s\n' "$_mm3_dt" | grep -qx 'apple,j613'; then
++		echo j613
++	elif printf '%s\n' "$_mm3_dt" | grep -qx 'apple,j615'; then
++		if [ "$(od -An -v -tx1 "$1/proc/device-tree/chosen/asahi,j615-25g83-experimental" 2>/dev/null | tr -d ' \n')" = 3100 ]; then
++			echo j615
++		else
++			echo j615-off
++		fi
++	fi
++}
++
+ # _mm3_node_open ROOT: this is a T6030 or T8122 with a render node of its
+ # asahi M3 GPU (among any others) that this user can open: the system Mesa
+ # would be refused on it.
+@@ -439,10 +465,10 @@ mesa_m3_session_env() {
+ 
+ if [ -z "${MESA_M3_SESSION_ENV_NO_RUN:-}" ]; then
+ 	mesa_m3_session_env
+-	unset -f mesa_m3_gate mesa_m3_session_env _mm3_init _mm3_state _mm3_node_open _mm3_attempt _mm3_soc_of
++	unset -f mesa_m3_gate mesa_m3_session_env _mm3_init _mm3_state _mm3_node_open _mm3_attempt _mm3_soc_of _mm3_25g83_board
+ fi
+ unset _mm3_root _mm3_p _mm3_nodes _mm3_node _mm3_n _mm3_drv _mm3_dcp _mm3_c _mm3_dev _mm3_f _mm3_v \
+ 	_mm3_val _mm3_ifs _mm3_d _mm3_out _mm3_rc _mm3_decision _mm3_on \
+ 	_mm3_so _mm3_uid _mm3_sid _mm3_inv _mm3_ver _mm3_boot _mm3_cr _mm3_nl \
+ 	_mm3_body _mm3_kv _mm3_dir _mm3_tmp _mm3_fb _mm3_run _mm3_att _mm3_ok _mm3_faults _mm3_ign _mm3_igd \
+-	_mm3_soc _mm3_name _mm3_dt _mm3_base _mm3_profile _mm3_requested _mm3_files _mm3_gate_ifs
++	_mm3_soc _mm3_name _mm3_dt _mm3_base _mm3_profile _mm3_requested _mm3_files _mm3_gate_ifs _mm3_board _mm3_note
+diff --git a/tests/test-session-env.sh b/tests/test-session-env.sh
+index 7503b8d..1ef0d23 100755
+--- a/tests/test-session-env.sh
++++ b/tests/test-session-env.sh
+@@ -596,9 +596,50 @@ echo j613-25g83-gl-only > "$p/share/mesa-m3/profile"
+ : > "$NATIVE/etc/mesa-m3/disable"
+ expect "$NATIVE" opt-out '/etc/mesa-m3/disable'
+ rm "$NATIVE/etc/mesa-m3/disable"
++# The J615 (15") shares the J613's 25G83 DCP, PMP and GPU images; it gets the
++# same profile only with m1n1's experimental switch, which m1n1 copies to
++# /chosen as the string "1" (m1n1's handoffs and the kernel check it too).
++J615C="$NATIVE/proc/device-tree/chosen/asahi,j615-25g83-experimental"
+ nul apple,j615 apple,t8122 > "$NATIVE/proc/device-tree/compatible"
+-expect "$NATIVE" profile-mismatch J613
++expect "$NATIVE" profile-mismatch 'J615 is experimental and requires chosen.asahi,j615-25g83-experimental=1'
++mkdir -p "$NATIVE/proc/device-tree/chosen"
++for v in '0\000' '11\000' '1' '1\000\000' ''; do
++	printf "$v" > "$J615C"
++	expect "$NATIVE" profile-mismatch 'J615 is experimental'
++done
++printf '1\000' > "$J615C"
++expect "$NATIVE" active 'T8122 (J615 on the 25G83 profile, experimental)'
++out=$(env -i PATH="$T/bin:/usr/bin:/bin" HOME="$T/home" FAKE_LOG="$T/log" sh -c '
++ MESA_M3_SESSION_ENV_NO_RUN=1 . "$1"
++ mesa_m3_session_env "$2"
++ printf "selected=%s\ndriver=%s\nicds=%s\nprofile=%s\n" "$MESA_M3_SESSION" "$MESA_LOADER_DRIVER_OVERRIDE" "$VK_DRIVER_FILES" "$MESA_M3_PROFILE"
++' sh "$ENVFILE" "$NATIVE")
++for expected in 'selected=/opt/mesa-m3/25g83' 'driver=asahi' 'icds=/opt/mesa-m3/25g83/share/vulkan/disabled' 'profile=j613-25g83-hal200'; do
++ if printf '%s\n' "$out" | grep -Fxq "$expected"; then echo "ok    J615 native export $expected"; else echo "FAIL J615 native export $expected: $out"; fail=1; fi
++done
++# Every other check of the profile still holds on the J615.
++expect "$NATIVE" profile-mismatch 'runtime GPU ABI' none FAKE_ABI=bad
++rm "$gpu/apple,j613-25g83-gpu-handoff"
++expect "$NATIVE" profile-mismatch 'exact firmware'
++printf '\000\000\000\001' > "$gpu/apple,j613-25g83-gpu-handoff"
++printf '\000\000\000\032\000\000\000\006\000\000\000\003' > "$gpu/apple,firmware-compat"
++expect "$NATIVE" profile-mismatch 'exact firmware'
++printf '\000\000\000\032\000\000\000\006\000\000\000\002' > "$gpu/apple,firmware-compat"
++rm "$p/share/mesa-m3/profile"
++expect "$NATIVE" incomplete-prefix 'capability marker'
++echo j613-25g83-gl-only > "$p/share/mesa-m3/profile"
++rm "$NATIVE/etc/mesa-m3/t8122-profile"
++expect "$NATIVE" profile-mismatch 'explicit native'
++echo j613-25g83-hal200 > "$NATIVE/etc/mesa-m3/t8122-profile"
++rm "$NATIVE/etc/mesa-m3/t8122-gpu-experiment"
++expect "$NATIVE" experimental 'T8122'
++: > "$NATIVE/etc/mesa-m3/t8122-gpu-experiment"
++# The switch admits only the J615: any other T8122 board stays out.
++nul apple,j504 apple,t8122 > "$NATIVE/proc/device-tree/compatible"
++expect "$NATIVE" profile-mismatch 'requires J613/T8122'
++rm -r "$NATIVE/proc/device-tree/chosen"
+ nul apple,j613 apple,t8122 > "$NATIVE/proc/device-tree/compatible"
++expect "$NATIVE" active T8122
+ # The old Pro and 14.x fixtures continue to pass above; a stale native
+ # selector on Pro must fail without selecting the HAL200 library.
+ mkdir -p "$J516S/etc/mesa-m3"
+-- 
+2.54.0 (Apple Git-157)
+
