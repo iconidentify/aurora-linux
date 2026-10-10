@@ -81,7 +81,14 @@ Prerequisites:
 - the J615-capable stage 1 `v1.6.1-m3air25.stage1` (the J613-only
   `v1.6.1-m3next.stage1` refuses a J615);
 - a matched installer whose release manifest lists `j615` in
-  `native25_boards`. Other releases refuse.
+  `native25_boards`. Other releases refuse. Such a release is assembled
+  only together with the J615 boot/kernel pair recorded in
+  `assemble-m3-stack.py` (`J615_NATIVE25_PAIR`: kernel and m1n1 source
+  commits and the exact `m1n1.bin`, built with recipe patches 0058-0060)
+  and a `mesa-m3` whose session hook admits the J615
+  (`/opt/mesa-m3/share/mesa-m3/native25-boards` lists `j615-experimental`;
+  recipe patch `patches/mesa-m3-j615-25g83/0001`). The installer checks
+  that list again before it publishes the profile.
 
 ```sh
 bash install-aurora-sep.sh --m3-profile=j615-25g83

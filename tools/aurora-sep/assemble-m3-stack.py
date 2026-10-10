@@ -12,9 +12,33 @@ import subprocess
 ROLES = {'kernel':'linux-aurora', 'headers':'linux-aurora-headers', 'm1n1':'m1n1-aurora',
          'mesa':'mesa-m3', 'libfprint':'libfprint', 'touchid':'aurora-touchid'}
 HEX = re.compile(r'[0-9a-f]{64}')
+# 25G83 on the J615 is experimental and lands only as one qualified set: the boot/kernel pair
+# built for it (exact kernel and m1n1 source commits, exact m1n1.bin with recipe patches
+# 0058-0060) and a Mesa whose session hook admits it (share/mesa-m3/native25-boards lists
+# j615-experimental). Record the pair here when that release is built, e.g.
+# {'kernel': <40 hex>, 'm1n1': <40 hex>, 'm1n1_bin_sha256': <64 hex>}; until then a manifest
+# listing j615 in native25_boards is refused.
+J615_NATIVE25_PAIR = None
 
 def member(path, name):
     return subprocess.check_output(['bsdtar', '-xOf', str(path), name])
+
+def optional_member(path, name):
+    result = subprocess.run(['bsdtar', '-xOf', str(path), name], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    return result.stdout if result.returncode == 0 else None
+
+def check_j615_native25(sources, binary_sha, mesa):
+    pair = J615_NATIVE25_PAIR
+    if not isinstance(pair, dict) or set(pair) != {'kernel', 'm1n1', 'm1n1_bin_sha256'}:
+        raise ValueError('J615 native25 requires the recorded J615 boot/kernel pair (J615_NATIVE25_PAIR)')
+    if sources['kernel'] != pair['kernel']: raise ValueError('J615 native25 requires the qualified J615 kernel')
+    if sources['m1n1'] != pair['m1n1']: raise ValueError('J615 native25 requires the qualified J615 m1n1 source')
+    if binary_sha != pair['m1n1_bin_sha256']: raise ValueError('J615 native25 requires the qualified J615 m1n1 binary')
+    boards = optional_member(mesa, 'opt/mesa-m3/share/mesa-m3/native25-boards')
+    if boards is None or b'j615-experimental' not in boards.splitlines() or b'j613' not in boards.splitlines():
+        raise ValueError('Mesa does not declare the J615 25G83 session capability')
+    if b'asahi,j615-25g83-experimental' not in member(mesa, 'opt/mesa-m3/libexec/mesa-m3-session-env'):
+        raise ValueError('Mesa session hook lacks the J615 25G83 admission')
 
 def desktop_data(manifest, directory):
     data = manifest.get('desktop_fixes')
@@ -88,6 +112,7 @@ def assemble(template, manifest, directory):
     session = member(resolved['mesa'],'opt/mesa-m3/libexec/mesa-m3-session-env')
     if b'j613-25g83-hal200' not in session: raise ValueError('Mesa session selector differs')
     member(resolved['mesa'],'opt/mesa-m3/libexec/mesa-m3-abi-check')
+    if 'j615' in native25: check_j615_native25(sources, binary_sha, resolved['mesa'])
     listing = subprocess.check_output(['bsdtar','-tf',str(resolved['kernel'])],text=True).splitlines()
     dt_path = re.compile(r'usr/lib/modules/[^/]+/dtbs/(?:apple/)?t8122-j613-25g83\.dtb')
     dtbs = [p for p in listing if dt_path.fullmatch(p)]
